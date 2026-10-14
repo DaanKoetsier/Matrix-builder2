@@ -28,8 +28,9 @@ import streamlit as st
 import pipeline as pl
 import master_parser as mp
 import pallet_parser as pp
+import compact
 
-st.set_page_config(page_title="Rate Matrix Builder", page_icon="📦",
+st.set_page_config(page_title="Rate Matrix Builder 2", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
@@ -342,7 +343,7 @@ def make_combined(results, variables_layout_rows, stage='minimal',
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.markdown("## 📦 Rate Matrix Builder")
+    st.markdown("## 📦 Rate Matrix Builder 2")
     st.caption("Fender Musical Instruments · Logistics")
     st.divider()
 
@@ -475,6 +476,17 @@ with st.sidebar:
         pallet_maut_table = pallet_maut_from_editor(_maut_edit)
 
     st.divider()
+    st.checkbox("✂️ Also build the compact matrix (switch points only)", value=True,
+                key='do_compact',
+                help="Keeps only the rows where the carrier choice changes. Every "
+                     "order still gets the same carrier as in the minimal matrix; "
+                     "TOTAL_PRICE on a merged row is a real rate of that carrier "
+                     "but not the exact price of every order it covers.")
+    st.checkbox("Fill gaps", value=False, key='compact_fill_gaps',
+                disabled=not st.session_state.get('do_compact', True),
+                help="Orders that get NO row in the minimal matrix (e.g. uneven "
+                     "parcels above the per-parcel limit) may get a carrier in the "
+                     "compact matrix. Orders that already had a rate keep their carrier.")
     run_btn = st.button("▶ Generate matrices", type="primary",
                         use_container_width=True, disabled=(uploaded is None))
     exp_btn = st.button("⚡ Express-only matrices",
@@ -762,6 +774,20 @@ if (run_btn or exp_btn) and uploaded and selected:
                 result = persist(result)
             if express_mode:
                 result = express_rename(result)
+            if st.session_state.get('do_compact', True) and result.get('minimal_df'):
+                progress.progress(idx / len(selected),
+                                  text=f"Compacting {country}…  ({idx+1}/{len(selected)})")
+                cframe, cstats = compact.compact_frame(
+                    pd.read_pickle(result['minimal_df']),
+                    fill_gaps=st.session_state.get('compact_fill_gaps', False))
+                cpath = str(Path(result['minimal_df']).with_name(f'{country}_compact_df.pkl'))
+                cframe.to_pickle(cpath)
+                result['compact_df'] = cpath
+                result['rows_compact'] = cstats['rows_out']
+                if cstats['mismatch']:
+                    errors.setdefault(country, []).append(
+                        f"⚠️ compact check: {cstats['mismatch']} test orders got a "
+                        f"different carrier — use the minimal matrix for {country}.")
 
             if result.get('pallet_warning'):
                 errors.setdefault(country, []).append(result['pallet_warning'])
@@ -817,11 +843,13 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
     if caption:
         st.caption(caption)
     summary = [{'Country': c, 'Extended': f"{r['rows_extended']:,}",
-                'Optimized': f"{r['rows_optimized']:,}", 'Minimal': f"{r['rows_minimal']:,}"}
+                'Optimized': f"{r['rows_optimized']:,}", 'Minimal': f"{r['rows_minimal']:,}",
+                'Compact': (f"{r['rows_compact']:,}" if 'rows_compact' in r else '–')}
                for c, r in results.items()]
     st.dataframe(pd.DataFrame(summary).set_index('Country'), use_container_width=True)
     st.caption("**Extended** = all combinations · **Optimized** = per-carrier dominance "
-               "removed · **Minimal** = cross-carrier dominance removed (use this one)")
+               "removed · **Minimal** = cross-carrier dominance removed · **Compact** = "
+               "only the switch points between carriers (same carrier for every order)")
 
     st.markdown("#### Download individual countries")
     for country, r in results.items():
@@ -853,9 +881,13 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
                    "a minute or two — then download it.")
         for _stage, _label in [('extended',  '🧩 Combined extended'),
                                ('optimized', '🧩 Combined optimized'),
-                               ('minimal',   '🧩 Combined minimal')]:
+                               ('minimal',   '🧩 Combined minimal'),
+                               ('compact',   '✂️ Combined compact (switch points only)')]:
             _available = any(r.get(f'{_stage}_df') and Path(r[f'{_stage}_df']).exists()
                              for r in results.values())
+            if _stage == 'compact' and not _available:
+                st.caption("Combined compact unavailable — tick ✂️ in the sidebar and re-run.")
+                continue
             if _available:
                 _built_download(
                     _label, f'_built_{kp}_combined_{_stage}',
@@ -866,7 +898,7 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
                         carrier_defaults=st.session_state.get('carrier_defaults_used'),
                         all_country_maut=st.session_state.get('all_country_maut_used')),
                     file_name=f"{fname_prefix}Combined_Matrix_{_stage}.xlsx", mime=_xlsx_mime,
-                    primary=(_stage == 'minimal'))
+                    primary=(_stage == 'compact'))
             else:
                 st.caption(f"Combined {_stage} unavailable — re-run to regenerate.")
 
