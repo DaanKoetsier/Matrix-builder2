@@ -2889,7 +2889,7 @@ def _find_var_row(vl, name):
 def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
                          column_order=None, all_country_maut=None,
                          pallet_overrides=None, pallet_maut_table=None,
-                         gbp_to_eur=None):
+                         gbp_to_eur=None, blank_prices=False):
     """Write a matrix with every calculated cell (FUEL/MAUT/TOLL/ADMIN/
     RATE_BASE2.0/TOTAL_PRICE) as a live formula referencing the Variables
     sheet's comprehensive, every-country block — so editing any assumption
@@ -2943,6 +2943,8 @@ def write_matrix_numeric(df, output_path, country_cfg, variables_layout=None,
         # A sentinel catch-all bucket (no rate components) keeps its literal
         # TOTAL_PRICE; a SUM/formula over blank cells would collapse it to 0.
         sentinel = is_bucket and pd.isna(rec.get('RATE_BASE'))
+        if blank_prices and pd.isna(rec.get('RATE_BASE')):
+            sentinel = True        # routing table: price columns stay empty
         formulas = {}
 
         if not sentinel:
@@ -3015,7 +3017,7 @@ def write_combined_matrix(frames, output_path, variables_layout=None,
                           pallet_maut=None, pallet_defaults=None,
                           carrier_defaults=None, formulas=True,
                           pallet_overrides=None, all_country_maut=None,
-                          gbp_to_eur=None):
+                          gbp_to_eur=None, keep_order=False):
     """Merge every country's minimal frame into ONE sheet, sorted by country then
     price. With formulas=True (default) the sheet uses live Variables formulas;
     per-country pallet MAUT cells are written into the Variables sheet. `frames`
@@ -3030,7 +3032,10 @@ def write_combined_matrix(frames, output_path, variables_layout=None,
             f"select fewer countries.")
     has_pallet = 'MOBILITY' in combined.columns
     order = PALLET_COLUMN_ORDER if has_pallet else COLUMN_ORDER
-    combined = combined.sort_values(['COUNTRYISO2', 'TOTAL_PRICE'],
+    # keep_order: rows are a routing table read top-down (routing.py) — keep
+    # their order within each country instead of sorting on price.
+    combined = combined.sort_values(['COUNTRYISO2'] if keep_order else
+                                    ['COUNTRYISO2', 'TOTAL_PRICE'],
                                     kind='stable').reset_index(drop=True)
     if formulas and has_pallet:
         write_matrix_with_formulas(combined, output_path, {'iso2': 'ALL'},
@@ -3042,6 +3047,7 @@ def write_combined_matrix(frames, output_path, variables_layout=None,
     else:
         write_matrix_numeric(combined, output_path, {'iso2': 'ALL'},
                              variables_layout, column_order=order,
+                             blank_prices=keep_order,
                              all_country_maut=all_country_maut,
                              pallet_overrides=pallet_overrides,
                              pallet_maut_table=pallet_maut,
