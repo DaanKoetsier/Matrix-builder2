@@ -476,7 +476,7 @@ with st.sidebar:
         pallet_maut_table = pallet_maut_from_editor(_maut_edit)
 
     st.divider()
-    st.checkbox("✂️ Also build the compact matrix (switch points only)", value=True,
+    st.checkbox("✂️ Express: also build the compact matrix (switch points only)", value=True,
                 key='do_compact',
                 help="Keeps only the rows where the carrier choice changes. Every "
                      "order still gets the same carrier as in the minimal matrix; "
@@ -774,7 +774,10 @@ if (run_btn or exp_btn) and uploaded and selected:
                 result = persist(result)
             if express_mode:
                 result = express_rename(result)
-            if st.session_state.get('do_compact', True) and result.get('minimal_df'):
+            # Express only: the standard matrix (pallets, a different price per
+            # postcode) takes far too long to compact on Streamlit Cloud.
+            if (express_mode and st.session_state.get('do_compact', True)
+                    and result.get('minimal_df')):
                 progress.progress(idx / len(selected),
                                   text=f"Compacting {country}…  ({idx+1}/{len(selected)})")
                 cframe, cstats = compact.compact_frame(
@@ -886,7 +889,7 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
             _available = any(r.get(f'{_stage}_df') and Path(r[f'{_stage}_df']).exists()
                              for r in results.values())
             if _stage == 'compact' and not _available:
-                st.caption("Combined compact unavailable — tick ✂️ in the sidebar and re-run.")
+                st.caption("Combined compact: Express run only (tick ✂️ in the sidebar).")
                 continue
             if _available:
                 _built_download(
