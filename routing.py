@@ -187,13 +187,53 @@ def build_routing(df):
         return df, {'rows_in': 0, 'rows_out': 0, 'mismatch': 0}
     df = df.reset_index(drop=True)
     price = pd.to_numeric(df.get('TOTAL_PRICE'), errors='coerce')
+    # Rows for particular orders only (a customer name in USER_DEF, or an
+    # AWKWARD / HAZMAT flag) stay as they are. A number in USER_DEF (e.g. the
+    # 1.5 m oversize limit stamped on UPSGB rows) is a limit of the carrier:
+    # it travels with the row as part of the outcome.
     spec_cols = [c for c in SPECIAL_COLS if c in df.columns]
-    special = (df[spec_cols].apply(lambda c: ~c.map(_blank)).any(axis=1)
-               if spec_cols else pd.Series(False, index=df.index))
-    keep_as_is = df[price.isna() | special]           # customer / service-code rows
-    work = df[price.notna() & ~special].copy()
+    flag_cols = [c for c in ('HAZMAT', 'AWKWARD') if c in df.columns]
+    udf_cols = [c for c in spec_cols if c not in flag_cols]
 
-    ocols = [c for c in OUTCOME_COLS if c in work.columns]
+    def _is_text(v):
+        if _blank(v):
+            return False
+        try:
+            float(str(v).replace(',', '.'))
+            return False
+        except ValueError:
+            return True
+    text_udf = (df[udf_cols].apply(lambda c: c.map(_is_text)).any(axis=1)
+                if udf_cols else pd.Series(False, index=df.index))
+    flagged = (df[flag_cols].apply(lambda c: ~c.map(_blank)).any(axis=1)
+               if flag_cols else pd.Series(False, index=df.index))
+    # customer / service-code rows stay as they are and go first; flagged rows
+    # (oversize buckets: AWKWARD) get their own routing table below the normal
+    # one, so an order only falls through to them when no normal row fits
+    keep_as_is = df[price.isna() | text_udf]
+    normal = df[price.notna() & ~text_udf & ~flagged]
+    buckets = df[price.notna() & ~text_udf & flagged]
+
+    per_norm, mm1, ng1 = _route_frame(normal, OUTCOME_COLS + udf_cols)
+    per_buck, mm2, ng2 = _route_frame(buckets, OUTCOME_COLS + udf_cols + flag_cols)
+
+    key = keep_as_is['POSTCODE'].map(lambda v: '' if _blank(v) else str(v))
+    pcs = sorted(set(per_norm) | set(per_buck) | set(key), key=lambda p: (p == '', p))
+    parts = []
+    for p in pcs:
+        parts += [keep_as_is[key == p], per_norm.get(p), per_buck.get(p)]
+    res = pd.concat([x for x in parts if x is not None and len(x)], ignore_index=True)
+    res = res.drop(columns=[c for c in ('_out', '_pc') if c in res.columns])
+    return res, {'rows_in': len(df), 'rows_out': len(res), 'mismatch': mm1 + mm2,
+                 'postcode_groups': ng1 + ng2}
+
+
+def _route_frame(work, outcome_cols):
+    """Route every postcode of `work`: {postcode: frame}, mismatches, groups."""
+    if work is None or work.empty:
+        return {}, 0, 0
+    work = work.copy()
+    ocols = [c for c in outcome_cols if c in work.columns]
     okey = work[ocols].apply(lambda c: c.map(str)).agg('\x1f'.join, axis=1)
     codes, _ = pd.factorize(okey)
     work['_out'] = codes
@@ -226,13 +266,4 @@ def build_routing(df):
         block = pd.DataFrame(rows)
         for p in pcs:
             per_pc[p] = block.assign(POSTCODE=(None if p == '' else p))
-
-    parts = []
-    for p in sorted(per_pc):
-        sp = keep_as_is[keep_as_is['POSTCODE'].map(lambda v: '' if _blank(v) else str(v)) == p]
-        parts += [sp, per_pc[p]]
-    rest = keep_as_is[~keep_as_is['POSTCODE'].map(lambda v: '' if _blank(v) else str(v)).isin(per_pc)]
-    res = pd.concat(parts + [rest], ignore_index=True)
-    res = res.drop(columns=[c for c in ('_out', '_pc') if c in res.columns])
-    return res, {'rows_in': len(df), 'rows_out': len(res), 'mismatch': mismatch,
-                 'postcode_groups': len(groups)}
+    return per_pc, mismatch, len(groups)
