@@ -253,7 +253,7 @@ ISO2_TO_ISO3 = {
     'IE': 'IRL', 'IT': 'ITA', 'LI': 'LIE', 'LT': 'LTU', 'LU': 'LUX',
     'LV': 'LVA', 'MC': 'MCO', 'NL': 'NLD', 'NO': 'NOR', 'PL': 'POL',
     'PT': 'PRT', 'RO': 'ROU', 'SE': 'SWE', 'SI': 'SVN', 'SK': 'SVK',
-    'SM': 'SMR',
+    'SM': 'SMR', 'CY': 'CYP', 'MT': 'MLT',
 }
 
 
@@ -2020,6 +2020,15 @@ def optimize_globally_for_country(df, country):
 # client asked for these entries to stay regardless.
 # Postcodes that must get parcel rows even though the pallet file (the source
 # of the per-country postcode list) has no pallet rate for them.
+# Postcode list for countries the pallet file has no postcodes for (otherwise
+# their parcel rows stay blank and CargoWrite skips them). First two
+# characters, as CargoWrite compares them.
+COUNTRY_DEFAULT_POSTCODES = {
+    'LI': ['94'],                                  # 9485-9498
+    'SM': ['47'],                                  # 4789x
+    'CY': ['All'],                                 # whole island, like MT / LU
+}
+
 COUNTRY_EXTRA_POSTCODES = {
     'ES': ['07'],          # Balearic Islands (Mallorca, Ibiza, Menorca)
 }
@@ -2380,6 +2389,8 @@ def run_pipeline_from_parsed(parsed, country, output_dir, cfg,
     cd = carrier_defaults or CARRIER_DEFAULTS
     vl = variables_layout or VARIABLES_LAYOUT
     country = country.upper()
+    if not parcel_postcodes and country in COUNTRY_DEFAULT_POSTCODES:
+        parcel_postcodes = list(COUNTRY_DEFAULT_POSTCODES[country])
     if parcel_postcodes:
         parcel_postcodes = list(parcel_postcodes) + [
             p for p in COUNTRY_EXTRA_POSTCODES.get(country, [])
