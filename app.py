@@ -28,7 +28,7 @@ import streamlit as st
 import pipeline as pl
 import master_parser as mp
 import pallet_parser as pp
-import compact
+import routing
 
 st.set_page_config(page_title="Rate Matrix Builder 2", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -336,7 +336,8 @@ def make_combined(results, variables_layout_rows, stage='minimal',
     pl.write_combined_matrix(frames, out, variables_layout_rows,
                              pallet_maut=pallet_maut, pallet_defaults=pallet_defaults,
                              carrier_defaults=carrier_defaults, formulas=False,
-                             all_country_maut=all_country_maut, gbp_to_eur=gbp_to_eur)
+                             all_country_maut=all_country_maut, gbp_to_eur=gbp_to_eur,
+                             keep_order=(stage == 'compact'))
     return Path(out).read_bytes()
 
 
@@ -476,18 +477,13 @@ with st.sidebar:
         pallet_maut_table = pallet_maut_from_editor(_maut_edit)
 
     st.divider()
-    st.checkbox("✂️ Express: also build the compact matrix (switch points only)", value=True,
+    st.checkbox("✂️ Express: also build the compact routing table", value=True,
                 key='do_compact',
-                help="Per number of parcels, keeps only the rows where the cheapest "
-                     "carrier changes. Assumes parcels of equal weight (how the weight "
-                     "is spread doesn't matter; EACH_WEIGHT is the carrier's real "
-                     "per-parcel maximum). TOTAL_PRICE on a merged row is a real rate "
-                     "of that carrier but not the exact price of every order it covers.")
-    st.checkbox("Fill gaps", value=False, key='compact_fill_gaps',
-                disabled=not st.session_state.get('do_compact', True),
-                help="Orders that get NO row in the minimal matrix (e.g. uneven "
-                     "parcels above the per-parcel limit) may get a carrier in the "
-                     "compact matrix. Orders that already had a rate keep their carrier.")
+                help="Per postcode: the number of parcels going up, and per count the "
+                     "cheapest carrier as the weight goes up. Counts with the same "
+                     "choices are merged (MIN_PARCEL–MAX_PARCEL). Read top-down, so "
+                     "the price columns are left empty. Assumes parcels of equal "
+                     "weight; EACH_WEIGHT is the carrier's real per-parcel maximum.")
     run_btn = st.button("▶ Generate matrices", type="primary",
                         use_container_width=True, disabled=(uploaded is None))
     exp_btn = st.button("⚡ Express-only matrices",
@@ -781,10 +777,7 @@ if (run_btn or exp_btn) and uploaded and selected:
                     and result.get('minimal_df')):
                 progress.progress(idx / len(selected),
                                   text=f"Compacting {country}…  ({idx+1}/{len(selected)})")
-                cframe, cstats = compact.compact_frame(
-                    pd.read_pickle(result['minimal_df']),
-                    fill_gaps=st.session_state.get('compact_fill_gaps', False),
-                    equal_parcels=True)
+                cframe, cstats = routing.build_routing(pd.read_pickle(result['minimal_df']))
                 cpath = str(Path(result['minimal_df']).with_name(f'{country}_compact_df.pkl'))
                 cframe.to_pickle(cpath)
                 result['compact_df'] = cpath
@@ -854,7 +847,7 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
     st.dataframe(pd.DataFrame(summary).set_index('Country'), use_container_width=True)
     st.caption("**Extended** = all combinations · **Optimized** = per-carrier dominance "
                "removed · **Minimal** = cross-carrier dominance removed · **Compact** = "
-               "only the switch points between carriers (same carrier for every order)")
+               "routing table: cheapest carrier per number of parcels (Express)")
 
     st.markdown("#### Download individual countries")
     for country, r in results.items():
@@ -887,7 +880,7 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
         for _stage, _label in [('extended',  '🧩 Combined extended'),
                                ('optimized', '🧩 Combined optimized'),
                                ('minimal',   '🧩 Combined minimal'),
-                               ('compact',   '✂️ Combined compact (switch points only)')]:
+                               ('compact',   '✂️ Combined compact (routing table)')]:
             _available = any(r.get(f'{_stage}_df') and Path(r[f'{_stage}_df']).exists()
                              for r in results.values())
             if _stage == 'compact' and not _available:
