@@ -156,9 +156,10 @@ def _route_group(g, out_codes, caps, vratio):
         n_last = len(blocks[-1]['items'])
         for r, sm in zip(rows_out[-n_last:], sim[-n_last:]):
             c = r.copy()
+            c['MIN_PARCEL'] = blocks[-1]['n_to'] + 1      # starts where the block ends
             c['MAX_PARCEL'] = None
             rows_out.append(c)
-            sim.append((sm[0], sm[1], INF) + sm[3:])
+            sim.append((sm[0], blocks[-1]['n_to'] + 1, INF) + sm[3:])
 
     # check: every equal-parcel order lands on the same carrier as the
     # cheapest row of the minimal matrix
