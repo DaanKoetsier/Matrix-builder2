@@ -215,24 +215,38 @@ def build_routing(df):
     normal = df[price.notna() & ~text_udf & ~flagged]
     buckets = df[price.notna() & ~text_udf & flagged]
 
-    per_norm, mm1, ng1 = _route_frame(normal, OUTCOME_COLS + udf_cols)
-    per_buck, mm2, ng2 = _route_frame(buckets, OUTCOME_COLS + udf_cols + flag_cols)
+    per_norm, mm1, gr_norm = _route_frame(normal, OUTCOME_COLS + udf_cols)
+    per_buck, mm2, gr_buck = _route_frame(buckets, OUTCOME_COLS + udf_cols + flag_cols)
+
+    # The largest group of postcodes with identical rows is written once with
+    # an empty POSTCODE (= the rest of the country), BELOW the postcodes that
+    # differ (e.g. GB islands), so CargoWrite — reading top-down — gives those
+    # their own rows first. A country where every postcode is the same ends up
+    # as one set of rows without a postcode.
+    def _split(per, groups):
+        if not groups:
+            return per, None
+        big = max(groups, key=len)
+        rest = per[big[0]].assign(POSTCODE=None)
+        return {p: f for p, f in per.items() if p not in set(big)}, rest
+    per_norm, blank_norm = _split(per_norm, gr_norm)
+    per_buck, blank_buck = _split(per_buck, gr_buck)
 
     key = keep_as_is['POSTCODE'].map(lambda v: '' if _blank(v) else str(v))
-    pcs = sorted(set(per_norm) | set(per_buck) | set(key), key=lambda p: (p == '', p))
-    parts = []
-    for p in pcs:
+    parts = [keep_as_is[key == '']]                  # customer / service rows first
+    for p in sorted((set(per_norm) | set(per_buck) | set(key)) - {''}):
         parts += [keep_as_is[key == p], per_norm.get(p), per_buck.get(p)]
+    parts += [per_norm.get(''), blank_norm, per_buck.get(''), blank_buck]
     res = pd.concat([x for x in parts if x is not None and len(x)], ignore_index=True)
     res = res.drop(columns=[c for c in ('_out', '_pc') if c in res.columns])
     return res, {'rows_in': len(df), 'rows_out': len(res), 'mismatch': mm1 + mm2,
-                 'postcode_groups': ng1 + ng2}
+                 'postcode_groups': len(gr_norm) + len(gr_buck)}
 
 
 def _route_frame(work, outcome_cols):
     """Route every postcode of `work`: {postcode: frame}, mismatches, groups."""
     if work is None or work.empty:
-        return {}, 0, 0
+        return {}, 0, []
     work = work.copy()
     ocols = [c for c in outcome_cols if c in work.columns]
     okey = work[ocols].apply(lambda c: c.map(str)).agg('\x1f'.join, axis=1)
@@ -267,4 +281,4 @@ def _route_frame(work, outcome_cols):
         block = pd.DataFrame(rows)
         for p in pcs:
             per_pc[p] = block.assign(POSTCODE=(None if p == '' else p))
-    return per_pc, mismatch, len(groups)
+    return per_pc, mismatch, list(groups.values())
