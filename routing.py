@@ -150,6 +150,16 @@ def _route_group(g, out_codes, caps, vratio):
                         INF if max_w is None else max_w,
                         INF if not np.isfinite(cap) else cap))
 
+    # Catch-all: the last parcel block once more without MAX_PARCEL, so orders
+    # with more parcels than the matrix goes to still get a carrier.
+    if blocks and not (open_end and blocks[-1]['n_to'] == last_n):
+        n_last = len(blocks[-1]['items'])
+        for r, sm in zip(rows_out[-n_last:], sim[-n_last:]):
+            c = r.copy()
+            c['MAX_PARCEL'] = None
+            rows_out.append(c)
+            sim.append((sm[0], sm[1], INF) + sm[3:])
+
     # check: every equal-parcel order lands on the same carrier as the
     # cheapest row of the minimal matrix
     mismatch = 0
