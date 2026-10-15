@@ -38,6 +38,9 @@ DIMS = 5
 # neither a limit, a price nor the postcode.
 OUTCOME_COLS = ['CARRIER_ID', 'SERVICE_LEVEL', 'USER_DEF_TYPE_1', 'USER_DEF_TYPE_2',
                 'USER_DEF_TYPE_3', 'USER_DEF_NUM_1', 'HAZMAT', 'AWKWARD']
+# Real per-parcel maximum of the UPS rate tables (pipeline.UPS_MAX_PARCEL_KG).
+CARRIER_EACH_CAP = {'UPDE': 70.0, 'UPSNL': 70.0, 'UPSGB': 70.0}
+
 LIMIT_COLS = ['MIN_PARCEL', 'MAX_PARCEL', 'MIN_WEIGHT', 'MAX_WEIGHT', 'EACH_WEIGHT',
               'MIN_VOLUME', 'MAX_VOLUME', 'EACH_VOLUME']
 
@@ -60,7 +63,23 @@ def _row_box(r):
     return lo, hi
 
 
+# Equal-parcels mode: an order is n parcels of the same weight (heaviest =
+# total / n); volume is ignored. Set by compact_frame(equal_parcels=True).
+_MODE = {'equal': False, 'nmax': 40}
+
+
 def _physical(lo, hi):
+    if _MODE['equal']:
+        n_lo = int(np.floor(lo[0])) + 1
+        n_hi = int(min(hi[0], _MODE['nmax']))
+        if n_hi < max(n_lo, 1) or not lo[1] < hi[1]:
+            return False
+        ns = np.arange(max(n_lo, 1), n_hi + 1, dtype=float)
+        return bool(np.any(np.maximum(lo[1], ns * lo[2]) < np.minimum(hi[1], ns * hi[2])))
+    return _physical_real(lo, hi)
+
+
+def _physical_real(lo, hi):
     """Does box (lo, hi] hold at least one real order? A real order has n >= 1
     parcels whose heaviest parcel weighs at least the average and at most the
     total (same for volume): total/n <= each <= total."""
@@ -229,6 +248,28 @@ def _winner(group_lo, group_hi, price, out, pts):
     return res
 
 
+def _equal_points(lo, hi, n_pts=20000, seed=0):
+    """Equal-parcel test orders: random ones plus every weight limit (and a
+    hair either side) for every parcel count."""
+    rng = np.random.default_rng(seed)
+    cap = np.where(np.isinf(hi), np.where(np.isinf(lo), 1.0, lo * 2 + 1), hi)
+    wmax = cap[:, 1].max() * 1.1
+    n = rng.integers(1, _MODE['nmax'] + 1, n_pts).astype(float)
+    w = rng.random(n_pts) * wmax
+    limits = np.unique(np.concatenate([hi[:, 1][np.isfinite(hi[:, 1])], lo[:, 1]]))
+    each = np.unique(hi[:, 2][np.isfinite(hi[:, 2])])
+    ns, ws = [n], [w]
+    for n_ in range(1, _MODE['nmax'] + 1):
+        cand = np.unique(np.concatenate([limits, each * n_]))
+        cand = cand[cand > 0]
+        for d in (0.0, 1e-6, -1e-6):
+            ws.append(cand + d); ns.append(np.full(len(cand), float(n_)))
+    n = np.concatenate(ns); w = np.concatenate(ws)
+    pts = np.zeros((len(n), DIMS))
+    pts[:, 0] = n; pts[:, 1] = w; pts[:, 2] = w / n
+    return pts
+
+
 def _check(full, comp, out_full, out_comp, n_pts=20000, seed=0, fill_gaps=False):
     """Spot check: random points + every row corner of the full matrix."""
     lo, hi, pr = full
@@ -243,6 +284,23 @@ def _check(full, comp, out_full, out_comp, n_pts=20000, seed=0, fill_gaps=False)
                          lo + 1e-6])
     corners[:, 0] = np.ceil(corners[:, 0])
     pts = np.vstack([pts, corners])
+    if _MODE['equal']:
+        n = rng.integers(1, _MODE['nmax'] + 1, len(pts)).astype(float)
+        pts[:, 0] = n; pts[:, 2] = pts[:, 1] / n; pts[:, 3:] = 0
+        extra = []
+        for k in range(len(lo)):
+            for n_ in range(1, _MODE['nmax'] + 1):
+                for w in (hi[k, 1], hi[k, 2] * n_, lo[k, 1]):
+                    if np.isfinite(w) and w > 0:
+                        for ww in (w, w + 1e-6, w - 1e-6):
+                            extra.append([n_, ww, ww / n_, 0, 0])
+        pts = np.vstack([pts, np.array(extra)]) if extra else pts
+        a = _winner(lo, hi, pr, out_full, pts)
+        b = _winner(clo, chi, cpr, out_comp, pts)
+        diff = a != b
+        if fill_gaps:
+            diff &= a != -1
+        return int(np.sum(diff))
     # only real orders: total/n <= each <= total (weight and volume)
     n = np.maximum(pts[:, 0], 1); pts[:, 0] = n
     for t, e in ((1, 2), (3, 4)):
@@ -270,7 +328,7 @@ def _as_str(frame):
     return frame.apply(lambda col: col.map(str))
 
 
-def compact_frame(df, verify=True, fill_gaps=False):
+def compact_frame(df, verify=True, fill_gaps=False, equal_parcels=False):
     """Compact one country's matrix frame. Returns (compacted_df, stats)."""
     if df is None or df.empty:
         return df, {'rows_in': 0, 'rows_out': 0, 'mismatch': 0}
@@ -286,6 +344,10 @@ def compact_frame(df, verify=True, fill_gaps=False):
     pc = work['POSTCODE'].fillna('').astype(str) if 'POSTCODE' in work else pd.Series('', index=work.index)
     work['_pc'] = pc
 
+    # each carrier's highest per-parcel weight anywhere in this country
+    ew = pd.to_numeric(work.get('EACH_WEIGHT'), errors='coerce')
+    country_each_cap = ew.groupby(work['CARRIER_ID']).max().dropna().to_dict()
+
     # postcodes with identical row sets are compacted once
     sigcols = [c for c in work.columns if c not in ('POSTCODE', '_pc')]
     sig = {}
@@ -298,11 +360,51 @@ def compact_frame(df, verify=True, fill_gaps=False):
         g = work[work['_pc'] == pcs[0]].reset_index(drop=True)
         boxes = [_row_box(r) for r in g.to_dict('records')]
         lo = np.array([b[0] for b in boxes]); hi = np.array([b[1] for b in boxes])
+        _MODE['equal'] = equal_parcels
+        if equal_parcels:
+            lo[:, 3:] = 0.0; hi[:, 3:] = INF          # volume ignored
+            # snap rounding noise (70.000002 kg, 5.000004 kg) to whole grams so
+            # slivers like 70 → 70.000002 kg don't need rows of their own;
+            # per-parcel limits are rounded UP so equal parcels still fit
+            lo[:, 1] = np.round(lo[:, 1], 3)
+            hi[:, 1] = np.where(np.isfinite(hi[:, 1]), np.round(hi[:, 1], 3), INF)
+            hi[:, 2] = np.where(np.isfinite(hi[:, 2]), np.ceil(hi[:, 2] * 1e4 - 1e-6) / 1e4, INF)
+            finite = hi[:, 0][np.isfinite(hi[:, 0])]
+            _MODE['nmax'] = int(finite.max()) + 1 if len(finite) else 1
         pr = g['_price'].to_numpy(float); oc = g['_out'].to_numpy()
         G = _Group(lo.copy(), hi.copy(), pr.copy(), oc.copy(), fill_gaps)
         G.compact()
         keep = G._act()
-        if verify:
+        if equal_parcels:
+            # EACH_WEIGHT becomes the carrier's real per-parcel maximum (how
+            # the weight is spread over the parcels doesn't matter, only that
+            # no parcel exceeds what the carrier takes). Kept only where the
+            # check shows every equal-parcel order keeps its carrier.
+            cap = {}
+            for i in range(len(oc)):
+                car = g['CARRIER_ID'].iloc[i]
+                c_max = CARRIER_EACH_CAP.get(car, country_each_cap.get(car, 0))
+                if np.isfinite(hi[i, 2]) and c_max:
+                    cap[oc[i]] = c_max
+            pts = _equal_points(lo, hi)
+            ref = _winner(lo, hi, pr, oc, pts)
+
+            def _diff():
+                b = _winner(G.lo[keep], G.hi[keep], G.price[keep], oc[keep], pts)
+                d = ref != b
+                if fill_gaps:
+                    d &= ref != -1
+                return int(np.sum(d))
+            base = _diff()
+            for k in sorted(keep, key=lambda i: G.price[i]):
+                if oc[k] in cap and G.hi[k][2] < cap[oc[k]]:
+                    old_e = G.hi[k][2]
+                    G.hi[k][2] = cap[oc[k]]
+                    if _diff() > base:
+                        G.hi[k][2] = old_e
+        if verify and equal_parcels:
+            mismatches += _diff()
+        elif verify:
             mismatches += _check((lo, hi, pr), (G.lo[keep], G.hi[keep], G.price[keep]), oc, oc[keep],
                                  fill_gaps=fill_gaps)
         rows = []
@@ -314,9 +416,16 @@ def compact_frame(df, verify=True, fill_gaps=False):
             r['MIN_WEIGHT'] = None if l[1] <= 0 else l[1]
             r['MAX_WEIGHT'] = None if np.isinf(h[1]) else h[1]
             r['EACH_WEIGHT'] = None if np.isinf(h[2]) else h[2]
-            r['MIN_VOLUME'] = None if l[3] <= 0 else l[3]
-            r['MAX_VOLUME'] = None if np.isinf(h[3]) else h[3]
-            r['EACH_VOLUME'] = None if np.isinf(h[4]) else h[4]
+            if equal_parcels:          # volume not modelled: widest of the merged rows
+                vol = g.iloc[G.src[k]]
+                for c in ('MIN_VOLUME', 'MAX_VOLUME', 'EACH_VOLUME'):
+                    if c in vol:
+                        v = pd.to_numeric(vol[c], errors='coerce')
+                        r[c] = None if v.isna().any() else (v.min() if c == 'MIN_VOLUME' else v.max())
+            else:
+                r['MIN_VOLUME'] = None if l[3] <= 0 else l[3]
+                r['MAX_VOLUME'] = None if np.isinf(h[3]) else h[3]
+                r['EACH_VOLUME'] = None if np.isinf(h[4]) else h[4]
             if len(G.src[k]) > 1 or G.price[k] != pr[k]:
                 src = g.iloc[[i for i in G.src[k] if pr[i] == G.price[k]][0]]
                 for c in ('RATE_BASE', 'RATE_BASE2.0', 'RATE_EXTRA', 'FUEL', 'MAUT',

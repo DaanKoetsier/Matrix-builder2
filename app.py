@@ -478,10 +478,11 @@ with st.sidebar:
     st.divider()
     st.checkbox("✂️ Express: also build the compact matrix (switch points only)", value=True,
                 key='do_compact',
-                help="Keeps only the rows where the carrier choice changes. Every "
-                     "order still gets the same carrier as in the minimal matrix; "
-                     "TOTAL_PRICE on a merged row is a real rate of that carrier "
-                     "but not the exact price of every order it covers.")
+                help="Per number of parcels, keeps only the rows where the cheapest "
+                     "carrier changes. Assumes parcels of equal weight (how the weight "
+                     "is spread doesn't matter; EACH_WEIGHT is the carrier's real "
+                     "per-parcel maximum). TOTAL_PRICE on a merged row is a real rate "
+                     "of that carrier but not the exact price of every order it covers.")
     st.checkbox("Fill gaps", value=False, key='compact_fill_gaps',
                 disabled=not st.session_state.get('do_compact', True),
                 help="Orders that get NO row in the minimal matrix (e.g. uneven "
@@ -782,7 +783,8 @@ if (run_btn or exp_btn) and uploaded and selected:
                                   text=f"Compacting {country}…  ({idx+1}/{len(selected)})")
                 cframe, cstats = compact.compact_frame(
                     pd.read_pickle(result['minimal_df']),
-                    fill_gaps=st.session_state.get('compact_fill_gaps', False))
+                    fill_gaps=st.session_state.get('compact_fill_gaps', False),
+                    equal_parcels=True)
                 cpath = str(Path(result['minimal_df']).with_name(f'{country}_compact_df.pkl'))
                 cframe.to_pickle(cpath)
                 result['compact_df'] = cpath
