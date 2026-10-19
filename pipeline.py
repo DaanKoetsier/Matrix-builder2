@@ -2627,7 +2627,10 @@ PALLET_DEFAULTS = {
         'fuel_pct':           0.155,   # FUEL DHL PALLET
         'mobility_pct':       0.04,    # MOBILITY PALLET
         'admin_per_shipment': 46.51,   # ADMIN PALLET (€, applies to every row)
-        'factor':             4.1278,     # FACTOR DHL (rates already factored)
+        # The DHL file ("pricing WITH factor") already holds the final rates,
+        # so the factor is 1 (dividing by 4.1278 made every pallet ~4x too
+        # cheap — e.g. DE 52 <=100 kg EUR 17 instead of EUR 70.93).
+        'factor':             1.0,        # FACTOR DHL — fixed
         'toll_pct':           0.0,     # default no toll; GB set in overrides
     },
 }
