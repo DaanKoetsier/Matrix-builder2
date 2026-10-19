@@ -477,13 +477,16 @@ with st.sidebar:
         pallet_maut_table = pallet_maut_from_editor(_maut_edit)
 
     st.divider()
-    st.checkbox("✂️ Express: also build the compact routing table", value=True,
+    st.checkbox("✂️ Also build the compact routing table", value=True,
                 key='do_compact',
                 help="Per postcode: the number of parcels going up, and per count the "
                      "cheapest carrier as the weight goes up. Counts with the same "
                      "choices are merged (MIN_PARCEL–MAX_PARCEL). Read top-down, so "
                      "the price columns are left empty. Assumes parcels of equal "
-                     "weight; EACH_WEIGHT is the carrier's real per-parcel maximum.")
+                     "weight; EACH_WEIGHT is the carrier's real per-parcel maximum. "
+                     "Express: postcodes with identical rows share one set with an "
+                     "empty postcode. Standard: every postcode keeps its own rows "
+                     "(pallet / zone rates differ per postcode) — this takes longer.")
     run_btn = st.button("▶ Generate matrices", type="primary",
                         use_container_width=True, disabled=(uploaded is None))
     exp_btn = st.button("⚡ Express-only matrices",
@@ -771,13 +774,12 @@ if (run_btn or exp_btn) and uploaded and selected:
                 result = persist(result)
             if express_mode:
                 result = express_rename(result)
-            # Express only: the standard matrix (pallets, a different price per
-            # postcode) takes far too long to compact on Streamlit Cloud.
-            if (express_mode and st.session_state.get('do_compact', True)
-                    and result.get('minimal_df')):
+            if st.session_state.get('do_compact', True) and result.get('minimal_df'):
                 progress.progress(idx / len(selected),
                                   text=f"Compacting {country}…  ({idx+1}/{len(selected)})")
-                cframe, cstats = routing.build_routing(pd.read_pickle(result['minimal_df']))
+                # standard: rates differ per postcode, so no shared empty postcode
+                cframe, cstats = routing.build_routing(
+                    pd.read_pickle(result['minimal_df']), blank_postcode=express_mode)
                 cpath = str(Path(result['minimal_df']).with_name(f'{country}_compact_df.pkl'))
                 cframe.to_pickle(cpath)
                 result['compact_df'] = cpath
@@ -884,7 +886,7 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
             _available = any(r.get(f'{_stage}_df') and Path(r[f'{_stage}_df']).exists()
                              for r in results.values())
             if _stage == 'compact' and not _available:
-                st.caption("Combined compact: Express run only (tick ✂️ in the sidebar).")
+                st.caption("Combined compact unavailable — tick ✂️ in the sidebar and re-run.")
                 continue
             if _available:
                 _built_download(

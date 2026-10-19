@@ -182,7 +182,7 @@ def _route_group(g, out_codes, caps, vratio):
     return rows_out, mismatch
 
 
-def build_routing(df):
+def build_routing(df, blank_postcode=True):
     """Routing table for one country's minimal frame. Returns (frame, stats)."""
     if df is None or df.empty:
         return df, {'rows_in': 0, 'rows_out': 0, 'mismatch': 0}
@@ -204,8 +204,12 @@ def build_routing(df):
             return False
         except ValueError:
             return True
-    text_udf = (df[udf_cols].apply(lambda c: c.map(_is_text)).any(axis=1)
-                if udf_cols else pd.Series(False, index=df.index))
+    # Only a name in USER_DEF_TYPE_1 (a customer, e.g. Audio Partner) marks a
+    # row for particular orders. Other text — UPDE's 'single' / 'multi' tariff
+    # label in USER_DEF_TYPE_2 — travels with the row like the carrier does.
+    cust_cols = [c for c in ('USER_DEF_TYPE_1',) if c in udf_cols]
+    text_udf = (df[cust_cols].apply(lambda c: c.map(_is_text)).any(axis=1)
+                if cust_cols else pd.Series(False, index=df.index))
     flagged = (df[flag_cols].apply(lambda c: ~c.map(_blank)).any(axis=1)
                if flag_cols else pd.Series(False, index=df.index))
     # customer / service-code rows stay as they are and go first; flagged rows
@@ -224,7 +228,9 @@ def build_routing(df):
     # their own rows first. A country where every postcode is the same ends up
     # as one set of rows without a postcode.
     def _split(per, groups):
-        if not groups:
+        # standard matrix: rates differ per postcode, so every postcode keeps
+        # its own rows (blank_postcode=False)
+        if not groups or not blank_postcode:
             return per, None
         big = max(groups, key=len)
         rest = per[big[0]].assign(POSTCODE=None)
