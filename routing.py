@@ -144,9 +144,16 @@ def _route_group(g, out_codes, caps, vratio):
 
     if trimmed:
         blocks[-1]['n_from'] = 1                  # the pallet tail: any parcel count
+    # The pallet carrier (it has the last word for every parcel count) also
+    # starts at 1 parcel on its rows in the middle of a block: an order with
+    # fewer parcels that gets that far would land on the pallet row at the end
+    # anyway. MAX_PARCEL stays, so heavier-count orders still reach the parcel
+    # rows below.
+    tail_outs = {it['o'] for it in blocks[-1]['items']} if trimmed else set()
     rows_out, sim = [], []
     for b in blocks:
         n_to_open = open_end and b['n_to'] == last_n
+        n_from = b['n_from']
         for it in b['items']:
             o, lo_r, k = it['o'], it['lo'], it['k']
             cap = caps.get(o, INF)
@@ -155,7 +162,8 @@ def _route_group(g, out_codes, caps, vratio):
             else:
                 max_w = None if n_to_open else round(cap * b['n_to'], 3)
             r = g.iloc[k].copy()
-            r['MIN_PARCEL'] = b['n_from']
+            p_from = 1 if it['o'] in tail_outs else n_from
+            r['MIN_PARCEL'] = p_from
             r['MAX_PARCEL'] = None if n_to_open else b['n_to']
             r['MIN_WEIGHT'] = lo_r
             r['MAX_WEIGHT'] = max_w
@@ -168,7 +176,7 @@ def _route_group(g, out_codes, caps, vratio):
                 if c in r.index:
                     r[c] = None
             rows_out.append(r)
-            sim.append((o, b['n_from'], INF if n_to_open else b['n_to'],
+            sim.append((o, p_from, INF if n_to_open else b['n_to'],
                         -INF if lo_r is None else lo_r,
                         INF if max_w is None else max_w,
                         INF if not np.isfinite(cap) else cap))
