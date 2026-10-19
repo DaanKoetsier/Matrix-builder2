@@ -78,7 +78,7 @@ def variables_layout(fuel_vals, maut_dhl, maut_dpd, pallet_vals=None):
         ('MOBILITY PALLET', pv.get('mobility', 0.04)),        # B15
         ('TOLL UK PALLET',  pv.get('toll',     0.0043)),      # B16
         ('ADMIN PALLET',    pv.get('admin',    46.51)),       # B17
-        ('FACTOR DHL',      pv.get('factor',   4.13)),         # B18
+        ('FACTOR DHL',      pv.get('factor',   1.0)),          # B18 — fixed at 1
     ]
 
 
@@ -449,9 +449,12 @@ with st.sidebar:
             pallet_vals['admin'] = st.number_input(
                 'Admin € / shipment', min_value=0.0,
                 value=float(_pd['admin_per_shipment']), step=1.0, format="%.2f", key='pal_admin')
-        pallet_vals['factor'] = st.number_input(
-            'Factor', min_value=0.0001,
-            value=float(_pd['factor']), step=0.01, format="%.4f", key='pal_factor')
+        # Fixed at 1: the DHL file already holds the final (factored) rates.
+        pallet_vals['factor'] = 1.0
+        st.number_input('Factor (fixed)', value=1.0, format="%.4f", disabled=True,
+                        key='pal_factor',
+                        help="The DHL file already contains the final rates, so the "
+                             "factor is fixed at 1.")
         pallet_max_band_kg = st.number_input(
             'Max pallet weight (kg)  —  0 = no cap', min_value=0,
             value=0, step=500, key='pal_max_band',
