@@ -52,17 +52,23 @@ def _segments(n, nlo, nhi, wlo, whi, each, price, out):
     idx = np.flatnonzero(m)
     bps = np.concatenate([whi[idx], wlo[idx], each[idx] * n])
     bps = np.unique(np.round(bps[np.isfinite(bps) & (bps > 0)], 6))
-    segs, prev = [], 0.0
+    segs, prev, gap = [], 0.0, False
     for b in bps:
         fit = idx[(wlo[idx] < b - EPS / 2) & (whi[idx] >= b - EPS / 2)
                   & (each[idx] * n >= b - EPS / 2)]
         if len(fit):
             k = fit[np.argmin(price[fit])]
             o = out[k]
-            if segs and segs[-1][0] == o and abs(segs[-1][2] - prev) < EPS:
+            # same carrier on both sides of a weight gap no row covers (e.g.
+            # the DHL band 22000-22500 kg missing from the pallet file):
+            # one row straight through
+            if segs and segs[-1][0] == o and (abs(segs[-1][2] - prev) < EPS or gap):
                 segs[-1][2] = b
             else:
                 segs.append([o, prev, b, k])
+            gap = False
+        elif segs:
+            gap = True
         prev = b
     return segs
 
@@ -193,8 +199,9 @@ def _route_group(g, out_codes, caps, vratio):
         for w in tests[tests > 0]:
             fit = idx[(wlo[idx] < w - EPS / 2) & (whi[idx] >= w - EPS / 2)
                       & (each[idx] * n >= w - EPS / 2)]
-            ref = out[fit[np.argmin(price[fit])]] if len(fit) else -1
-            if _first_match(sim, n, w) != ref:
+            if not len(fit):
+                continue          # a gap, bridged when the same carrier is on both sides
+            if _first_match(sim, n, w) != out[fit[np.argmin(price[fit])]]:
                 mismatch += 1
     return rows_out, mismatch
 
