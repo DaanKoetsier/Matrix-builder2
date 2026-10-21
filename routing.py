@@ -23,6 +23,9 @@ INF = np.inf
 
 # Real per-parcel maximum of the UPS rate tables (pipeline.UPS_MAX_PARCEL_KG).
 # Other carriers: the highest EACH_WEIGHT they have in the country's matrix.
+# Carriers whose EACH_WEIGHT marks a separate tariff (DPD small 3 kg vs normal 31.5 kg).
+TARIFF_BY_EACH_WEIGHT = {'DPD'}
+
 CARRIER_EACH_CAP = {'UPDE': 70.0, 'UPSNL': 70.0, 'UPSGB': 70.0}
 
 OUTCOME_COLS = ['CARRIER_ID', 'SERVICE_LEVEL']
@@ -299,6 +302,14 @@ def _route_frame(work, outcome_cols):
     work = work.copy()
     ocols = [c for c in outcome_cols if c in work.columns]
     okey = work[ocols].apply(lambda c: c.map(str)).agg('\x1f'.join, axis=1)
+    # Carriers with separate tariffs by parcel size under one service level
+    # (DPD small <= 3 kg / normal <= 31.5 kg): each tariff is its own option,
+    # with its own per-parcel maximum.
+    split = work['CARRIER_ID'].isin(TARIFF_BY_EACH_WEIGHT)
+    if split.any():
+        ew_cls = pd.to_numeric(work['EACH_WEIGHT'], errors='coerce').map(
+            lambda v: '' if pd.isna(v) else f'{v:g}')
+        okey = okey.where(~split, okey + '\x1f' + ew_cls)
     codes, _ = pd.factorize(okey)
     work['_out'] = codes
     work['_pc'] = work['POSTCODE'].map(lambda v: '' if _blank(v) else str(v))
