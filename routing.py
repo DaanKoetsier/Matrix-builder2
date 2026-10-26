@@ -250,12 +250,34 @@ def build_routing(df, blank_postcode=True):
     # customer / service-code rows stay as they are and go first; flagged rows
     # (oversize buckets: AWKWARD) get their own routing table below the normal
     # one, so an order only falls through to them when no normal row fits
+    # Sentinel catch-alls (TOTAL_PRICE 999999, e.g. DHL up to 24000 kg: "only
+    # if nothing else fits") go to the very bottom, below the oversize rows.
+    sentinel = price >= 999999
     keep_as_is = df[price.isna()]
     customers = df[price.notna() & text_udf]
-    normal = df[price.notna() & ~text_udf & ~flagged]
-    buckets = df[price.notna() & ~text_udf & flagged]
+    normal = df[price.notna() & ~text_udf & ~flagged & ~sentinel]
+    buckets = df[price.notna() & ~text_udf & flagged & ~sentinel]
+    tail_rows = df[sentinel & ~text_udf].copy()
+    for c in PRICE_COLS:
+        if c in tail_rows.columns:
+            tail_rows[c] = None
 
     per_norm, mm1, gr_norm = _route_frame(normal, OUTCOME_COLS + udf_cols)
+
+    # A size limit in USER_DEF_TYPE_1 (UPSGB 1.5 m) sends a bigger parcel to
+    # the oversize rows (AWKWARD) further down. At a postcode with such a
+    # limit, the rows without one (the pallet) get the same limit, so a bigger
+    # parcel falls through them too instead of stopping at the pallet.
+    if len(buckets) and 'USER_DEF_TYPE_1' in normal.columns:
+        def _stamp(f):
+            lim = pd.to_numeric(f['USER_DEF_TYPE_1'].map(
+                lambda v: str(v).replace(',', '.')), errors='coerce')
+            if lim.notna().any():
+                f = f.copy()
+                top = f.loc[lim.idxmax(), 'USER_DEF_TYPE_1']
+                f.loc[f['USER_DEF_TYPE_1'].map(_blank), 'USER_DEF_TYPE_1'] = top
+            return f
+        per_norm = {p: _stamp(f) for p, f in per_norm.items()}
     per_buck, mm2, gr_buck = _route_frame(buckets, OUTCOME_COLS + udf_cols + flag_cols)
 
     # The largest group of postcodes with identical rows is written once with
@@ -289,6 +311,7 @@ def build_routing(df, blank_postcode=True):
     for p in sorted((set(per_norm) | set(per_buck) | set(per_cust) | set(key)) - {''}):
         parts += [keep_as_is[key == p], per_cust.get(p), per_norm.get(p), per_buck.get(p)]
     parts += [per_norm.get(''), blank_norm, per_buck.get(''), blank_buck]
+    parts.append(tail_rows)                             # sentinel catch-all: last
     res = pd.concat([x for x in parts if x is not None and len(x)], ignore_index=True)
     res = res.drop(columns=[c for c in ('_out', '_pc') if c in res.columns])
     return res, {'rows_in': len(df), 'rows_out': len(res), 'mismatch': mm1 + mm2 + mm3,
