@@ -2034,8 +2034,9 @@ COUNTRY_EXTRA_POSTCODES = {
 }
 
 COUNTRY_EXCLUSIVE_POSTCODES = {
-    'GB': {'BT': 'UPSNL', 'GY': 'UPSNL', 'IM': 'UPSNL', 'JE': 'UPSNL',
-           'WC2H 8LP': 'UPSGB', 'SY1 1PN': 'UPSGB'},
+    # (Wunjo / Brunswick Guitars are matched by name in USER_DEF_TYPE_1, see
+    # USER_DEF_TYPE_1_CARRIER_EXCEPTIONS — not by their full postcode.)
+    'GB': {'BT': 'UPSNL', 'GY': 'UPSNL', 'IM': 'UPSNL', 'JE': 'UPSNL'},
     # Spain: Canary Islands (35, 38) and Ceuta / Melilla (51, 52) — UPDE has no
     # Standard there and DPD's country-wide flat rate does not apply; UPSNL only.
     # Balearic Islands (07) — UPSNL only as well.

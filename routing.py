@@ -205,14 +205,8 @@ def _route_group(g, out_codes, caps, vratio):
         idx = np.flatnonzero(m)
         bps = np.concatenate([whi[idx], wlo[idx], each[idx] * n])
         bps = np.unique(bps[np.isfinite(bps) & (bps > 0)])
-        # every stretch between two weight limits (its middle) plus a spread
-        # of 200 weights; exactly-on-a-limit points are left out — limits are
-        # rounded to whole grams, so a few mg either side is no real order
-        edges = np.concatenate([[0.0], bps])
-        tests = np.unique(np.concatenate([(edges[:-1] + edges[1:]) / 2,
+        tests = np.unique(np.concatenate([bps, bps + 1e-3, bps - 1e-3,
                                           np.linspace(0.001, bps.max() * 1.05, 200)]))
-        near = np.min(np.abs(tests[:, None] - bps[None, :]), axis=1) < 2e-3
-        tests = tests[~near]
         for w in tests[tests > 0]:
             fit = idx[(wlo[idx] < w - EPS / 2) & (whi[idx] >= w - EPS / 2)
                       & (each[idx] * n >= w - EPS / 2)]
@@ -253,11 +247,14 @@ def build_routing(df, blank_postcode=True):
                 if cust_cols else pd.Series(False, index=df.index))
     flagged = (df[flag_cols].apply(lambda c: ~c.map(_blank)).any(axis=1)
                if flag_cols else pd.Series(False, index=df.index))
+    # customer / service-code rows stay as they are and go first; flagged rows
+    # (oversize buckets: AWKWARD) get their own routing table below the normal
+    # one, so an order only falls through to them when no normal row fits
     # Sentinel catch-alls (TOTAL_PRICE 999999, e.g. DHL up to 24000 kg: "only
-    # if nothing else fits") go to the very bottom of the country.
+    # if nothing else fits") go to the very bottom, below the oversize rows.
     sentinel = price >= 999999
-    keep_as_is = df[price.isna()]                    # service-code rows: first
-    customers = df[price.notna() & text_udf & ~sentinel]
+    keep_as_is = df[price.isna()]
+    customers = df[price.notna() & text_udf]
     normal = df[price.notna() & ~text_udf & ~flagged & ~sentinel]
     buckets = df[price.notna() & ~text_udf & flagged & ~sentinel]
     tail_rows = df[sentinel & ~text_udf].copy()
@@ -265,37 +262,23 @@ def build_routing(df, blank_postcode=True):
         if c in tail_rows.columns:
             tail_rows[c] = None
 
-    # Size sections. A size limit in USER_DEF_TYPE_1 (UPSGB 1.5 m, DPD 1.75 m)
-    # means a bigger parcel needs that carrier's oversize bucket (AWKWARD, with
-    # a surcharge) or another carrier. Read top-down, one table cannot do both:
-    # each postcode gets a table per size range — every row of it stamped with
-    # the range's upper limit, so a bigger parcel falls through to the next
-    # table — and a last table for parcels above every limit (buckets, pallets
-    # and carriers without a limit).
-    ocols_all = OUTCOME_COLS + udf_cols + flag_cols
-    lim_col = 'USER_DEF_TYPE_1' if 'USER_DEF_TYPE_1' in normal.columns else None
-    lims = (pd.to_numeric(normal[lim_col], errors='coerce') if lim_col
-            else pd.Series(np.nan, index=normal.index))
-    limits = sorted(lims.dropna().unique()) if len(buckets) else []
-    if limits:
-        # buckets without a postcode apply wherever their carrier has rows
-        pcs_by_car = (normal.assign(_p=normal['POSTCODE'].map(lambda v: '' if _blank(v) else str(v)))
-                      .query("_p != ''").groupby('CARRIER_ID')['_p'].unique().to_dict())
-        parts_b = []
-        for _, r in buckets.iterrows():
-            if _blank(r.get('POSTCODE')) and len(pcs_by_car.get(r['CARRIER_ID'], [])):
-                parts_b.append(pd.DataFrame([r] * len(pcs_by_car[r['CARRIER_ID']]))
-                               .assign(POSTCODE=list(pcs_by_car[r['CARRIER_ID']])))
-            else:
-                parts_b.append(pd.DataFrame([r]))
-        bk = pd.concat(parts_b, ignore_index=True) if parts_b else buckets
-        sections = [(L, pd.concat([normal[lims.isna() | (lims >= L)], bk], ignore_index=True))
-                    for L in limits]
-        sections.append((None, pd.concat([normal[lims.isna()], bk], ignore_index=True)))
-    else:
-        sections = [(None, normal)]
-        if len(buckets):
-            sections.append((None, buckets))
+    per_norm, mm1, gr_norm = _route_frame(normal, OUTCOME_COLS + udf_cols)
+
+    # A size limit in USER_DEF_TYPE_1 (UPSGB 1.5 m) sends a bigger parcel to
+    # the oversize rows (AWKWARD) further down. At a postcode with such a
+    # limit, the rows without one (the pallet) get the same limit, so a bigger
+    # parcel falls through them too instead of stopping at the pallet.
+    if len(buckets) and 'USER_DEF_TYPE_1' in normal.columns:
+        def _stamp(f):
+            lim = pd.to_numeric(f['USER_DEF_TYPE_1'].map(
+                lambda v: str(v).replace(',', '.')), errors='coerce')
+            if lim.notna().any():
+                f = f.copy()
+                top = f.loc[lim.idxmax(), 'USER_DEF_TYPE_1']
+                f.loc[f['USER_DEF_TYPE_1'].map(_blank), 'USER_DEF_TYPE_1'] = top
+            return f
+        per_norm = {p: _stamp(f) for p, f in per_norm.items()}
+    per_buck, mm2, gr_buck = _route_frame(buckets, OUTCOME_COLS + udf_cols + flag_cols)
 
     # The largest group of postcodes with identical rows is written once with
     # an empty POSTCODE (= the rest of the country), BELOW the postcodes that
@@ -310,60 +293,29 @@ def build_routing(df, blank_postcode=True):
         big = max(groups, key=len)
         rest = per[big[0]].assign(POSTCODE=None)
         return {p: f for p, f in per.items() if p not in set(big)}, rest
-
-    sec_out, mm1, ngroups = [], 0, 0
-    for L, frame in sections:
-        per, mm, groups = _route_frame(frame, ocols_all)
-        mm1 += mm
-        ngroups += len(groups)
-        if L is not None:
-            per = {p: f.assign(USER_DEF_TYPE_1=L) for p, f in per.items()}
-        per, blank = _split(per, groups)
-        sec_out.append((per, blank))
+    per_norm, blank_norm = _split(per_norm, gr_norm)
 
     # customer rows (a name in USER_DEF_TYPE_1): the same layout, per customer,
     # each postcode keeping its own rows; they go first at their postcode
     per_cust, mm3 = {}, 0
     for cname, sub in (customers.groupby(customers['USER_DEF_TYPE_1'].map(str))
                        if len(customers) else []):
-        pc_rows, mm, _ = _route_frame(sub, ocols_all)
+        pc_rows, mm, _ = _route_frame(sub, OUTCOME_COLS + udf_cols + flag_cols)
         mm3 += mm
         for p, f in pc_rows.items():
             per_cust[p] = pd.concat([per_cust[p], f]) if p in per_cust else f
-
-    # A size table that routes exactly like the last (limit-free) table is
-    # redundant at that postcode: drop it (e.g. GB islands, UPSNL only).
-    if len(sec_out) > 1:
-        cmp_cols = ['CARRIER_ID', 'SERVICE_LEVEL', 'MIN_PARCEL', 'MAX_PARCEL',
-                    'MIN_WEIGHT', 'MAX_WEIGHT', 'EACH_WEIGHT', 'AWKWARD']
-
-        def _sig(f):
-            if f is None:
-                return None
-            c = [x for x in cmp_cols if x in f.columns]
-            return f[c].astype(str).values.tolist()
-        last_per, last_blank = sec_out[-1]
-        for i in range(len(sec_out) - 1):
-            per, blank = sec_out[i]
-            per = {p: f for p, f in per.items() if _sig(f) != _sig(last_per.get(p))}
-            if blank is not None and _sig(blank) == _sig(last_blank):
-                blank = None
-            sec_out[i] = (per, blank)
+    per_buck, blank_buck = _split(per_buck, gr_buck)
 
     key = keep_as_is['POSTCODE'].map(lambda v: '' if _blank(v) else str(v))
-    all_pcs = set(per_cust) | set(key)
-    for per, _ in sec_out:
-        all_pcs |= set(per)
     parts = [keep_as_is[key == ''], per_cust.get('')]   # service / customer rows first
-    for p in sorted(all_pcs - {''}):
-        parts += [keep_as_is[key == p], per_cust.get(p)] + [per.get(p) for per, _ in sec_out]
-    for per, blank in sec_out:
-        parts += [per.get(''), blank]
+    for p in sorted((set(per_norm) | set(per_buck) | set(per_cust) | set(key)) - {''}):
+        parts += [keep_as_is[key == p], per_cust.get(p), per_norm.get(p), per_buck.get(p)]
+    parts += [per_norm.get(''), blank_norm, per_buck.get(''), blank_buck]
     parts.append(tail_rows)                             # sentinel catch-all: last
     res = pd.concat([x for x in parts if x is not None and len(x)], ignore_index=True)
     res = res.drop(columns=[c for c in ('_out', '_pc') if c in res.columns])
-    return res, {'rows_in': len(df), 'rows_out': len(res), 'mismatch': mm1 + mm3,
-                 'postcode_groups': ngroups}
+    return res, {'rows_in': len(df), 'rows_out': len(res), 'mismatch': mm1 + mm2 + mm3,
+                 'postcode_groups': len(gr_norm) + len(gr_buck)}
 
 
 def _route_frame(work, outcome_cols):
