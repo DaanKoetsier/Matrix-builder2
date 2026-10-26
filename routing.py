@@ -32,6 +32,9 @@ OUTCOME_COLS = ['CARRIER_ID', 'SERVICE_LEVEL']
 # Rows that only apply to particular orders (customer, oversize, hazmat …)
 SPECIAL_COLS = ['USER_DEF_TYPE_1', 'USER_DEF_TYPE_2', 'USER_DEF_TYPE_3',
                 'USER_DEF_NUM_1', 'HAZMAT', 'AWKWARD']
+# Customer exceptions (a name in USER_DEF_TYPE_1) ship with one carrier on its
+# plain services only: SINGLE for one parcel, STANDARD for more.
+CUSTOMER_SERVICE_LEVELS = {'SINGLE', 'STANDARD'}
 PRICE_COLS = ['RATE_BASE', 'RATE_BASE2.0', 'RATE_EXTRA', 'MOBILITY', 'FUEL', 'MAUT',
               'Linehaul UPSDE', 'TOLL', 'ADMIN', 'TOTAL_PRICE']
 EPS = 1e-6
@@ -326,6 +329,9 @@ def build_routing(df, blank_postcode=True):
     per_cust, mm3 = {}, 0
     for cname, sub in (customers.groupby(customers['USER_DEF_TYPE_1'].map(str))
                        if len(customers) else []):
+        plain = sub['SERVICE_LEVEL'].map(lambda v: str(v).strip().upper()).isin(CUSTOMER_SERVICE_LEVELS)
+        if plain.any():
+            sub = sub[plain]
         pc_rows, mm, _ = _route_frame(sub, ocols_all)
         mm3 += mm
         for p, f in pc_rows.items():
