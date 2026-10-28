@@ -35,6 +35,9 @@ SPECIAL_COLS = ['USER_DEF_TYPE_1', 'USER_DEF_TYPE_2', 'USER_DEF_TYPE_3',
 PRICE_COLS = ['RATE_BASE', 'RATE_BASE2.0', 'RATE_EXTRA', 'MOBILITY', 'FUEL', 'MAUT',
               'Linehaul UPSDE', 'TOLL', 'ADMIN', 'TOTAL_PRICE']
 EPS = 1e-6
+# Size limit (longest side, m) of the pallet carrier: DHL Freight EuroConnect
+# takes items up to 2.40 m long.
+CARRIER_SIZE_LIMIT = {'DHL-FENDER': 2.4}
 
 
 def _num(s, default):
@@ -266,16 +269,18 @@ def build_routing(df, blank_postcode=True):
 
     # A size limit in USER_DEF_TYPE_1 (UPSGB 1.5 m) sends a bigger parcel to
     # the oversize rows (AWKWARD) further down. At a postcode with such a
-    # limit, the rows without one (the pallet) get the same limit, so a bigger
-    # parcel falls through them too instead of stopping at the pallet.
+    # limit, the pallet gets its own size limit (DHL 2.4 m), so a parcel
+    # bigger than that falls through to the oversize rows instead of
+    # stopping at the pallet.
     if len(buckets) and 'USER_DEF_TYPE_1' in normal.columns:
         def _stamp(f):
             lim = pd.to_numeric(f['USER_DEF_TYPE_1'].map(
                 lambda v: str(v).replace(',', '.')), errors='coerce')
             if lim.notna().any():
                 f = f.copy()
-                top = f.loc[lim.idxmax(), 'USER_DEF_TYPE_1']
-                f.loc[f['USER_DEF_TYPE_1'].map(_blank), 'USER_DEF_TYPE_1'] = top
+                own = f['CARRIER_ID'].map(CARRIER_SIZE_LIMIT)
+                fill = f['USER_DEF_TYPE_1'].map(_blank) & own.notna()
+                f.loc[fill, 'USER_DEF_TYPE_1'] = own[fill]
             return f
         per_norm = {p: _stamp(f) for p, f in per_norm.items()}
     per_buck, mm2, gr_buck = _route_frame(buckets, OUTCOME_COLS + udf_cols + flag_cols)
