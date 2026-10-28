@@ -295,6 +295,26 @@ def build_routing(df, blank_postcode=True):
         return {p: f for p, f in per.items() if p not in set(big)}, rest
     per_norm, blank_norm = _split(per_norm, gr_norm)
 
+    # Standard matrix: an order whose postcode is not in the list would only
+    # find the pallet catch-all. Below the postcodes comes one parcel table
+    # without a postcode — the parcel carriers only (rows with a parcel count;
+    # the pallet is priced per postcode), as routed for the most common set
+    # of parcel rates in the country.
+    generic, mm4 = None, 0
+    if not blank_postcode and 'MAX_PARCEL' in normal.columns:
+        parcel = normal[pd.to_numeric(normal['MAX_PARCEL'], errors='coerce').notna()]
+        pcs = parcel['POSTCODE'].map(lambda v: '' if _blank(v) else str(v))
+        if len(parcel) and (pcs != '').any():
+            sig_cols = [c for c in parcel.columns if c != 'POSTCODE']
+            sigs = {p: hash(tuple(map(tuple, g[sig_cols].astype(str)
+                                     .sort_values(sig_cols).values)))
+                    for p, g in parcel[pcs != ''].groupby(pcs[pcs != ''])}
+            common = pd.Series(sigs).value_counts().index[0]
+            rep_pc = next(p for p, h in sigs.items() if h == common)
+            g_per, mm4, _ = _route_frame(parcel[pcs == rep_pc], OUTCOME_COLS + udf_cols)
+            if rep_pc in g_per:
+                generic = g_per[rep_pc].assign(POSTCODE=None)
+
     # customer rows (a name in USER_DEF_TYPE_1): the same layout, per customer,
     # each postcode keeping its own rows; they go first at their postcode
     per_cust, mm3 = {}, 0
@@ -310,11 +330,11 @@ def build_routing(df, blank_postcode=True):
     parts = [keep_as_is[key == ''], per_cust.get('')]   # service / customer rows first
     for p in sorted((set(per_norm) | set(per_buck) | set(per_cust) | set(key)) - {''}):
         parts += [keep_as_is[key == p], per_cust.get(p), per_norm.get(p), per_buck.get(p)]
-    parts += [per_norm.get(''), blank_norm, per_buck.get(''), blank_buck]
+    parts += [per_norm.get(''), blank_norm, generic, per_buck.get(''), blank_buck]
     parts.append(tail_rows)                             # sentinel catch-all: last
     res = pd.concat([x for x in parts if x is not None and len(x)], ignore_index=True)
     res = res.drop(columns=[c for c in ('_out', '_pc') if c in res.columns])
-    return res, {'rows_in': len(df), 'rows_out': len(res), 'mismatch': mm1 + mm2 + mm3,
+    return res, {'rows_in': len(df), 'rows_out': len(res), 'mismatch': mm1 + mm2 + mm3 + mm4,
                  'postcode_groups': len(gr_norm) + len(gr_buck)}
 
 
