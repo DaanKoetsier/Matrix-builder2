@@ -2046,8 +2046,10 @@ COUNTRY_EXCLUSIVE_POSTCODES = {
 }
 
 # Countries whose exclusive codes above only apply to postcodes that are actually
-# in the pallet/postcode file — they are never added on top of it.
-COUNTRY_EXCLUSIVE_ONLY_IF_LISTED = {'PT'}
+# in the pallet/postcode file — they are never added on top of it. (Empty: PT's
+# Madeira / Azores (9x) are not in the DHL pallet file but must get UPSNL rows,
+# otherwise their orders fall to the generic mainland parcel rows.)
+COUNTRY_EXCLUSIVE_ONLY_IF_LISTED = set()
 
 
 def exclusive_postcodes_for(country, codes=None):
