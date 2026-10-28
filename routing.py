@@ -315,15 +315,26 @@ def build_routing(df, blank_postcode=True):
             if rep_pc in g_per:
                 generic = g_per[rep_pc].assign(POSTCODE=None)
 
-    # customer rows (a name in USER_DEF_TYPE_1): the same layout, per customer,
-    # each postcode keeping its own rows; they go first at their postcode
+    # Customer rows (a name in USER_DEF_TYPE_1) go first at their postcode.
+    # CargoWrite selects customer rows by name and takes the FIRST one, without
+    # looking at parcel count, weight or volume — so one row per customer and
+    # postcode: the service covering the most parcels (UPSGB STANDARD; the
+    # pallet for a pallet-only customer), no cut-offs.
     per_cust, mm3 = {}, 0
-    for cname, sub in (customers.groupby(customers['USER_DEF_TYPE_1'].map(str))
-                       if len(customers) else []):
-        pc_rows, mm, _ = _route_frame(sub, OUTCOME_COLS + udf_cols + flag_cols)
-        mm3 += mm
-        for p, f in pc_rows.items():
-            per_cust[p] = pd.concat([per_cust[p], f]) if p in per_cust else f
+    for (cname, p), sub in (customers.groupby(
+            [customers['USER_DEF_TYPE_1'].map(str),
+             customers['POSTCODE'].map(lambda v: '' if _blank(v) else str(v))],
+            sort=False) if len(customers) else []):
+        mp = pd.to_numeric(sub['MAX_PARCEL'], errors='coerce').fillna(INF)
+        mw = pd.to_numeric(sub['MAX_WEIGHT'], errors='coerce').fillna(0)
+        r = sub.loc[mp.mul(1e6).add(mw).idxmax()].copy()
+        for c in ['MIN_PARCEL', 'MAX_PARCEL', 'MIN_WEIGHT', 'MAX_WEIGHT',
+                  'MIN_VOLUME', 'MAX_VOLUME', 'EACH_WEIGHT', 'EACH_VOLUME'] + PRICE_COLS:
+            if c in r.index:
+                r[c] = None
+        r['MIN_PARCEL'] = 1
+        f = pd.DataFrame([r])
+        per_cust[p] = pd.concat([per_cust[p], f]) if p in per_cust else f
     per_buck, blank_buck = _split(per_buck, gr_buck)
 
     key = keep_as_is['POSTCODE'].map(lambda v: '' if _blank(v) else str(v))
