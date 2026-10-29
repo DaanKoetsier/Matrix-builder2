@@ -38,6 +38,9 @@ EPS = 1e-6
 # Size limit (longest side, m) of the pallet carrier: DHL Freight EuroConnect
 # takes items up to 2.40 m long.
 CARRIER_SIZE_LIMIT = {'DHL-FENDER': 2.4}
+# DPD small (<= 3 kg) also has a size limit of 140 cm (longest side + 2x the
+# two shorter sides); USER_DEF_TYPE_1 only holds one length, so 1.4 m.
+SMALL_TARIFF_SIZE = {'DPD': (3.0, 1.4)}
 
 
 def _num(s, default):
@@ -226,6 +229,13 @@ def build_routing(df, blank_postcode=True):
         return df, {'rows_in': 0, 'rows_out': 0, 'mismatch': 0}
     df = df.reset_index(drop=True)
     price = pd.to_numeric(df.get('TOTAL_PRICE'), errors='coerce')
+    if 'USER_DEF_TYPE_1' in df.columns and 'EACH_WEIGHT' in df.columns:
+        lim = pd.to_numeric(df['USER_DEF_TYPE_1'].map(
+            lambda v: str(v).replace(',', '.')), errors='coerce')
+        ew = pd.to_numeric(df['EACH_WEIGHT'], errors='coerce')
+        for car, (max_kg, size) in SMALL_TARIFF_SIZE.items():
+            small = (df['CARRIER_ID'] == car) & (ew <= max_kg + EPS) & lim.notna()
+            df.loc[small, 'USER_DEF_TYPE_1'] = size
     # Rows for particular orders only (a customer name in USER_DEF, or an
     # AWKWARD / HAZMAT flag) stay as they are. A number in USER_DEF (e.g. the
     # 1.5 m oversize limit stamped on UPSGB rows) is a limit of the carrier:
@@ -268,10 +278,8 @@ def build_routing(df, blank_postcode=True):
     per_norm, mm1, gr_norm = _route_frame(normal, OUTCOME_COLS + udf_cols)
 
     # A size limit in USER_DEF_TYPE_1 (UPSGB 1.5 m) sends a bigger parcel to
-    # the oversize rows (AWKWARD) further down. At a postcode with such a
-    # limit, the pallet gets its own size limit (DHL 2.4 m), so a parcel
-    # bigger than that falls through to the oversize rows instead of
-    # stopping at the pallet.
+    # the oversize rows (AWKWARD). At a postcode with such a limit, the pallet
+    # gets its own size limit (DHL 2.4 m).
     if len(buckets) and 'USER_DEF_TYPE_1' in normal.columns:
         def _stamp(f):
             lim = pd.to_numeric(f['USER_DEF_TYPE_1'].map(
@@ -342,11 +350,35 @@ def build_routing(df, blank_postcode=True):
         per_cust[p] = pd.concat([per_cust[p], f]) if p in per_cust else f
     per_buck, blank_buck = _split(per_buck, gr_buck)
 
+    # Oversize rows (AWKWARD) only match orders flagged as such. Where the
+    # only other way for an oversize parcel is the pallet (GB: UPSGB 1.5 m,
+    # no other parcel carrier), they go above the normal rows, so it takes
+    # the carrier's oversize service (UPSGB +surcharge) before the pallet;
+    # postcodes that carrier does not serve (islands: UPSNL only) come before
+    # them. Where a parcel carrier without a size limit serves those
+    # postcodes (ES / PL: UPDE), that one is used and they stay at the bottom.
     key = keep_as_is['POSTCODE'].map(lambda v: '' if _blank(v) else str(v))
+    buck_cars = set(buckets['CARRIER_ID'])
+    pcs = sorted((set(per_norm) | set(per_buck) | set(per_cust) | set(key)) - {''})
+    own = [p for p in pcs if p in per_norm and not (set(per_norm[p]['CARRIER_ID']) & buck_cars)]
+
+    def _unlimited_parcel(f):
+        lim = pd.to_numeric(f['USER_DEF_TYPE_1'].map(
+            lambda v: str(v).replace(',', '.')), errors='coerce') \
+            if 'USER_DEF_TYPE_1' in f.columns else pd.Series(np.nan, index=f.index)
+        return bool((lim.isna() & ~f['CARRIER_ID'].isin(CARRIER_SIZE_LIMIT)).any())
+    on_top = bool(buck_cars) and not any(
+        _unlimited_parcel(per_norm[p]) for p in pcs if p in per_norm and p not in set(own))
     parts = [keep_as_is[key == ''], per_cust.get('')]   # service / customer rows first
-    for p in sorted((set(per_norm) | set(per_buck) | set(per_cust) | set(key)) - {''}):
-        parts += [keep_as_is[key == p], per_cust.get(p), per_norm.get(p), per_buck.get(p)]
-    parts += [per_norm.get(''), blank_norm, generic, per_buck.get(''), blank_buck]
+    if on_top:
+        for p in own:
+            parts += [keep_as_is[key == p], per_cust.get(p), per_buck.get(p), per_norm.get(p)]
+        parts += [per_buck.get(''), blank_buck]
+    for p in (pcs if not on_top else [p for p in pcs if p not in set(own)]):
+        parts += [keep_as_is[key == p], per_cust.get(p), per_buck.get(p), per_norm.get(p)]
+    parts += [per_norm.get(''), blank_norm, generic]
+    if not on_top:
+        parts += [per_buck.get(''), blank_buck]
     parts.append(tail_rows)                             # sentinel catch-all: last
     res = pd.concat([x for x in parts if x is not None and len(x)], ignore_index=True)
     res = res.drop(columns=[c for c in ('_out', '_pc') if c in res.columns])
