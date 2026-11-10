@@ -21,7 +21,7 @@ import pandas as pd
 
 INF = np.inf
 
-# Real per-parcel maximum of the UPS rate tables (pipeline.UPS_MAX_PARCEL_KG).
+# Real per-parcel maximum of the UPS rate tables (70 kg).
 # Other carriers: the highest EACH_WEIGHT they have in the country's matrix.
 # Carriers whose EACH_WEIGHT marks a separate tariff (DPD small 3 kg vs normal 31.5 kg).
 TARIFF_BY_EACH_WEIGHT = {'DPD'}
