@@ -8,8 +8,9 @@ their cheapest. Here every row gets its position as price and the routing
 table (routing.py) keeps only the rows that decide something — the result
 routes every order like their full list does, in their own columns.
 
-Rows picked by name, not by price (a customer name or PRIO in USER_DEF_TYPE_1,
-and the fixed service-code rows) are kept unchanged, first, in their order.
+Rows picked by name, not by price, are kept unchanged in their order: a
+customer name or service code in USER_DEF_TYPE_1 first at its country, the
+PRIO rows together at the very end of the file (as the customer has them).
 """
 import re
 
@@ -27,6 +28,8 @@ NUMERIC_COLS = ['MIN_VOLUME', 'MAX_VOLUME', 'MIN_WEIGHT', 'MAX_WEIGHT',
                 'MIN_PARCEL', 'MAX_PARCEL', 'EACH_WEIGHT', 'EACH_VOLUME']
 # The DHL catch-all (only if nothing else fits) stays the last row of a country.
 SENTINEL_MIN_KG = 24000
+# Prio orders are picked by USER_DEF_TYPE_1 'PRIO'.
+PRIO = 'PRIO'
 # Fixed service-code rows carry this marker in USER_DEF_TYPE_1.
 SERVICE_CODE_MARK = 1e-12
 
@@ -124,6 +127,8 @@ def compact_customer_matrix(df, progress=None):
     """Shrink the customer's matrix per country. Returns (frame, stats per
     country). `progress(i, n, country)` is called before each country."""
     countries = list(dict.fromkeys(df['COUNTRYISO2']))
+    prio = (df['USER_DEF_TYPE_1'].map(str) == PRIO) if 'USER_DEF_TYPE_1' in df.columns \
+        else pd.Series(False, index=df.index)
     parts, stats = [], {}
     for i, country in enumerate(countries):
         if progress:
@@ -134,11 +139,13 @@ def compact_customer_matrix(df, progress=None):
                     & (g['MAX_WEIGHT'] >= SENTINEL_MIN_KG))
         g.loc[sentinel, 'TOTAL_PRICE'] = 999999.0
         named = _by_name(g)
-        fixed = g[named]
+        fixed = g[named & ~prio[g.index]]
         routed, st = routing.build_routing(g[~named], blank_postcode=False, generic=False)
-        stats[country] = {'rows_in': len(g), 'rows_out': len(fixed) + len(routed),
+        stats[country] = {'rows_in': len(g),
+                          'rows_out': int(named.sum()) + len(routed),
                           'mismatch': st['mismatch']}
         parts += [fixed, routed]
+    parts.append(df[prio])                     # PRIO rows: all at the end
     out = pd.concat([p for p in parts if p is not None and len(p)], ignore_index=True)
     return out, stats
 
