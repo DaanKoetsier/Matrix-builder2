@@ -510,7 +510,8 @@ with st.expander("🔁 Shrink the customer's matrix (sorted on their price, no p
     st.caption("Upload the combined matrix the customer sent back (all countries, sorted "
                "on their price, without prices). No rate card needed: every country is "
                "shrunk to its routing table, with the customer's own columns.")
-    _cust_file = st.file_uploader("Customer matrix (.xlsx)", type=["xlsx"], key='cust_upload')
+    _cust_file = st.file_uploader("Customer matrix (.xlsx / .xlsb)", type=["xlsx", "xlsb"],
+                                  key='cust_upload')
     if _cust_file is not None and st.button("✂️ Shrink", key='cust_go', type='primary'):
         _bar = st.progress(0.0, text="Reading the file…")
         _df, _header = cmx.read_customer_matrix(_cust_file)

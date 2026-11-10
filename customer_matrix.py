@@ -16,6 +16,8 @@ import re
 import numpy as np
 import pandas as pd
 from openpyxl import Workbook, load_workbook
+from openpyxl.cell import WriteOnlyCell
+from openpyxl.styles import PatternFill
 
 import routing
 
@@ -74,15 +76,26 @@ def _eval_formulas(df, raw):
 def read_customer_matrix(path):
     """Read the customer's sorted matrix. Returns (frame, header): the frame
     in the file's row order with numeric values, `header` its own columns."""
-    wb = load_workbook(path, read_only=True)
-    ws = wb.worksheets[0]
-    rows = ws.iter_rows(values_only=True)
-    header = [h for h in next(rows)]
-    while header and header[-1] is None:
-        header.pop()
-    data = [list(r[:len(header)]) for r in rows if any(v is not None for v in r)]
-    wb.close()
-    raw = pd.DataFrame(data, columns=header)
+    name = str(getattr(path, 'name', path)).lower()
+    if name.endswith('.xlsb'):
+        # Excel binary workbook: values only (no formulas to evaluate)
+        if hasattr(path, 'seek'):
+            path.seek(0)
+        raw = pd.read_excel(path, sheet_name=0, engine='calamine', dtype=object)
+        raw = raw.loc[:, [c for c in raw.columns if not str(c).startswith('Unnamed')]]
+        raw = raw.dropna(how='all').reset_index(drop=True)
+        raw = raw.astype(object).where(raw.notna(), None)
+        header = list(raw.columns)
+    else:
+        wb = load_workbook(path, read_only=True)
+        ws = wb.worksheets[0]
+        rows = ws.iter_rows(values_only=True)
+        header = [h for h in next(rows)]
+        while header and header[-1] is None:
+            header.pop()
+        data = [list(r[:len(header)]) for r in rows if any(v is not None for v in r)]
+        wb.close()
+        raw = pd.DataFrame(data, columns=header)
     df = raw.copy()
     for _ in range(3):                  # formulas that use other formulas
         df = _eval_formulas(df, raw)
@@ -132,14 +145,17 @@ def compact_customer_matrix(df, progress=None):
 
 def write_customer_matrix(df, header, path):
     """Write the shrunk matrix with the customer's own columns (no prices
-    unless their file had them), values only."""
+    unless their file had them), values only. Rows picked by name (PRIO,
+    customer) are yellow, as in our own matrix."""
+    named = _by_name(df).to_numpy()
     back = {v: k for k, v in COLUMN_ALIASES.items() if k in header}
     df = df.rename(columns=back)
     wb = Workbook(write_only=True)
     ws = wb.create_sheet('Matrix')
     ws.append(header)
+    fill = PatternFill('solid', fgColor='FFF2CC')
     cols = [c if c in df.columns else None for c in header]
-    for row in df.itertuples(index=False, name=None):
+    for i, row in enumerate(df.itertuples(index=False, name=None)):
         rec = dict(zip(df.columns, row))
         vals = []
         for c in cols:
@@ -148,6 +164,9 @@ def write_customer_matrix(df, header, path):
                 v = None
             elif isinstance(v, np.generic):
                 v = v.item()
+            if named[i]:
+                v = WriteOnlyCell(ws, value=v)
+                v.fill = fill
             vals.append(v)
         ws.append(vals)
     wb.save(path)
