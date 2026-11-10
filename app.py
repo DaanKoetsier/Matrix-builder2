@@ -29,6 +29,7 @@ import pipeline as pl
 import master_parser as mp
 import pallet_parser as pp
 import routing
+import customer_matrix as cmx
 
 st.set_page_config(page_title="Rate Matrix Builder 2", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -498,6 +499,42 @@ with st.sidebar:
                              "isn't overwritten.")
     if uploaded is None:
         st.caption("Upload a rate card first.")
+
+
+# ── Customer's returned matrix ───────────────────────────────────────────────
+# The customer sorts our matrix on their own price (with their factor) and sends
+# it back without prices. The row order is their price: shrink it to the rows
+# that decide something, in their own columns, ready to send back.
+
+with st.expander("🔁 Shrink the customer's matrix (sorted on their price, no prices)"):
+    st.caption("Upload the combined matrix the customer sent back (all countries, sorted "
+               "on their price, without prices). No rate card needed: every country is "
+               "shrunk to its routing table, with the customer's own columns.")
+    _cust_file = st.file_uploader("Customer matrix (.xlsx / .xlsb)", type=["xlsx", "xlsb"],
+                                  key='cust_upload')
+    if _cust_file is not None and st.button("✂️ Shrink", key='cust_go', type='primary'):
+        _bar = st.progress(0.0, text="Reading the file…")
+        _df, _header = cmx.read_customer_matrix(_cust_file)
+
+        def _cust_progress(i, n, country):
+            _bar.progress(i / max(n, 1), text=f"Shrinking {country}…  ({i + 1}/{n})")
+        _out, _stats = cmx.compact_customer_matrix(_df, progress=_cust_progress)
+        _bar.progress(1.0, text="Writing the file…")
+        _path = Path(tempfile.mkdtemp()) / f"{Path(_cust_file.name).stem}_compact.xlsx"
+        cmx.write_customer_matrix(_out, _header, _path)
+        st.session_state['cust_result'] = (_path.name, _path.read_bytes(), _stats)
+        _bar.empty()
+    if st.session_state.get('cust_result'):
+        _name, _bytes, _stats = st.session_state['cust_result']
+        st.dataframe(pd.DataFrame([{'Country': c, 'Rows in': f"{v['rows_in']:,}",
+                                    'Rows out': f"{v['rows_out']:,}",
+                                    'Check': v['mismatch']} for c, v in _stats.items()])
+                     .set_index('Country'), use_container_width=True)
+        st.caption("**Check** = test orders (exactly on a weight boundary, within a gram) "
+                   "that land on another carrier than in the customer's full list.")
+        st.download_button(f"📥 Download {_name}", data=_bytes, file_name=_name,
+                           mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                           key='cust_dl', type='primary')
 
 
 # ── Country selection ─────────────────────────────────────────────────────────
