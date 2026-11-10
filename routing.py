@@ -223,8 +223,10 @@ def _route_group(g, out_codes, caps, vratio):
     return rows_out, mismatch
 
 
-def build_routing(df, blank_postcode=True):
-    """Routing table for one country's minimal frame. Returns (frame, stats)."""
+def build_routing(df, blank_postcode=True, generic=True):
+    """Routing table for one country's minimal frame. Returns (frame, stats).
+    `generic=False` leaves out the parcel table without a postcode (a customer's
+    returned matrix must route exactly like their own list)."""
     if df is None or df.empty:
         return df, {'rows_in': 0, 'rows_out': 0, 'mismatch': 0}
     df = df.reset_index(drop=True)
@@ -314,7 +316,7 @@ def build_routing(df, blank_postcode=True):
     # the pallet is priced per postcode), as routed for the most common set
     # of parcel rates in the country.
     generic, mm4 = None, 0
-    if not blank_postcode and 'MAX_PARCEL' in normal.columns:
+    if generic and not blank_postcode and 'MAX_PARCEL' in normal.columns:
         parcel = normal[pd.to_numeric(normal['MAX_PARCEL'], errors='coerce').notna()]
         pcs = parcel['POSTCODE'].map(lambda v: '' if _blank(v) else str(v))
         if len(parcel) and (pcs != '').any():
