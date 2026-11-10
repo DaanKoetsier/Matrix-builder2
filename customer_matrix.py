@@ -76,6 +76,43 @@ def _eval_formulas(df, raw):
     return df
 
 
+def _read_xlsb(path):
+    """Read an Excel binary workbook (values only, no formulas) row by row.
+    Each distinct text is kept once (the same carrier / country / postcode
+    repeats on hundreds of thousands of rows) and numbers go straight into
+    arrays: about a third of the memory of reading every cell as an object."""
+    from python_calamine import CalamineWorkbook
+    if hasattr(path, 'read'):
+        path.seek(0)
+        wb = CalamineWorkbook.from_filelike(path)
+    else:
+        wb = CalamineWorkbook.from_path(str(path))
+    rows = wb.get_sheet_by_index(0).iter_rows()
+    header = list(next(rows))
+    while header and header[-1] in ('', None):
+        header.pop()
+    numeric = [c in NUMERIC_COLS for c in header]
+    cols = [[] for _ in header]
+    seen = {}
+    for r in rows:
+        if not any(v not in ('', None) for v in r[:len(header)]):
+            continue
+        for j, v in enumerate(r[:len(header)]):
+            if v == '' or v is None:
+                v = None
+            elif numeric[j]:
+                pass
+            elif isinstance(v, str):
+                v = seen.setdefault(v, v)
+            elif isinstance(v, float) and v.is_integer():
+                v = int(v)
+            cols[j].append(v)
+    df = pd.DataFrame({h: (pd.array(c, dtype='float64') if numeric[j]
+                           else pd.Series(c, dtype=object))
+                       for j, (h, c) in enumerate(zip(header, cols))})
+    return df, header
+
+
 def read_customer_matrix(path):
     """Read the customer's sorted matrix. Returns (frame, header): the frame
     in the file's row order with numeric values, `header` its own columns."""
@@ -84,11 +121,7 @@ def read_customer_matrix(path):
         # Excel binary workbook: values only (no formulas to evaluate)
         if hasattr(path, 'seek'):
             path.seek(0)
-        raw = pd.read_excel(path, sheet_name=0, engine='calamine', dtype=object)
-        raw = raw.loc[:, [c for c in raw.columns if not str(c).startswith('Unnamed')]]
-        raw = raw.dropna(how='all').reset_index(drop=True)
-        raw = raw.astype(object).where(raw.notna(), None)
-        header = list(raw.columns)
+        df, header = _read_xlsb(path)
     else:
         wb = load_workbook(path, read_only=True)
         ws = wb.worksheets[0]
@@ -99,9 +132,11 @@ def read_customer_matrix(path):
         data = [list(r[:len(header)]) for r in rows if any(v is not None for v in r)]
         wb.close()
         raw = pd.DataFrame(data, columns=header)
-    df = raw.copy()
-    for _ in range(3):                  # formulas that use other formulas
-        df = _eval_formulas(df, raw)
+        del data
+        df = raw.copy()
+        for _ in range(3):              # formulas that use other formulas
+            df = _eval_formulas(df, raw)
+        del raw
     for c in NUMERIC_COLS:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors='coerce')

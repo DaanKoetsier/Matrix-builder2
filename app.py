@@ -469,7 +469,7 @@ with st.sidebar:
             st.session_state.pallet_maut_df = _default_pallet_maut_df()
         _maut_edit = st.data_editor(
             st.session_state.pallet_maut_df, num_rows="dynamic",
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
             column_config={
                 'Country': st.column_config.TextColumn(width="small"),
                 'MAUT %': st.column_config.NumberColumn(format="%.4f"),
@@ -489,9 +489,9 @@ with st.sidebar:
                      "empty postcode. Standard: every postcode keeps its own rows "
                      "(pallet / zone rates differ per postcode) — this takes longer.")
     run_btn = st.button("▶ Generate matrices", type="primary",
-                        use_container_width=True, disabled=(uploaded is None))
+                        width='stretch', disabled=(uploaded is None))
     exp_btn = st.button("⚡ Express-only matrices",
-                        use_container_width=True, disabled=(uploaded is None),
+                        width='stretch', disabled=(uploaded is None),
                         help="Build a matrix with ONLY the EXPRESS SAVER options — "
                              "UPS DE (7R9W62 as UPSDE SINGLE / SAVER + EXPRESS SAVER), UPS NL EXPRESS SAVER, "
                              "UPS GB EXPRESS SAVER. No STANDARD, no DPD/DHL, no pallets. "
@@ -519,6 +519,7 @@ with st.expander("🔁 Shrink the customer's matrix (sorted on their price, no p
         def _cust_progress(i, n, country):
             _bar.progress(i / max(n, 1), text=f"Shrinking {country}…  ({i + 1}/{n})")
         _out, _stats = cmx.compact_customer_matrix(_df, progress=_cust_progress)
+        del _df                                  # free the full matrix before writing
         _bar.progress(1.0, text="Writing the file…")
         _path = Path(tempfile.mkdtemp()) / f"{Path(_cust_file.name).stem}_compact.xlsx"
         cmx.write_customer_matrix(_out, _header, _path)
@@ -529,7 +530,7 @@ with st.expander("🔁 Shrink the customer's matrix (sorted on their price, no p
         st.dataframe(pd.DataFrame([{'Country': c, 'Rows in': f"{v['rows_in']:,}",
                                     'Rows out': f"{v['rows_out']:,}",
                                     'Check': v['mismatch']} for c, v in _stats.items()])
-                     .set_index('Country'), use_container_width=True)
+                     .set_index('Country'), width='stretch')
         st.caption("**Check** = test orders (exactly on a weight boundary, within a gram) "
                    "that land on another carrier than in the customer's full list.")
         st.download_button(f"📥 Download {_name}", data=_bytes, file_name=_name,
@@ -632,7 +633,7 @@ with st.expander("📐 Exceptions & buckets — oversize / surcharges per carrie
         st.session_state.exceptions_df = DEFAULT_EXCEPTIONS.copy()
     edited = st.data_editor(
         st.session_state.exceptions_df,
-        num_rows="dynamic", use_container_width=True, hide_index=True,
+        num_rows="dynamic", width='stretch', hide_index=True,
         column_config={
             'Enabled': st.column_config.CheckboxColumn(width="small"),
             'Carrier': st.column_config.SelectboxColumn(
@@ -659,7 +660,7 @@ with st.expander("📐 Exceptions & buckets — oversize / surcharges per carrie
         st.session_state.overflow_df = DEFAULT_OVERFLOW.copy()
     ov_edit = st.data_editor(
         st.session_state.overflow_df, num_rows="dynamic",
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
         column_config={
             'Enabled': st.column_config.CheckboxColumn(width="small"),
             'Carrier': st.column_config.SelectboxColumn(
@@ -677,7 +678,7 @@ with st.expander("📐 Exceptions & buckets — oversize / surcharges per carrie
         st.session_state.postcode_df = DEFAULT_POSTCODE.copy()
     pc_edit = st.data_editor(
         st.session_state.postcode_df, num_rows="dynamic",
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
         column_config={
             'Enabled': st.column_config.CheckboxColumn(width="small"),
             'Carrier': st.column_config.SelectboxColumn(
@@ -698,7 +699,7 @@ with st.expander("📐 Exceptions & buckets — oversize / surcharges per carrie
         st.session_state.heavy_df = DEFAULT_HEAVY.copy()
     hv_edit = st.data_editor(
         st.session_state.heavy_df, num_rows="dynamic",
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
         column_config={
             'Enabled': st.column_config.CheckboxColumn(width="small"),
             'Carrier': st.column_config.SelectboxColumn(
@@ -855,7 +856,7 @@ def _built_download(label, state_key, build, file_name, mime, primary=False):
     if data is None:
         if st.button(f"⚙️ Build — {label}", key=f'btn{state_key}',
                      type=('primary' if primary else 'secondary'),
-                     use_container_width=True):
+                     width='stretch'):
             with st.spinner(f"Building {file_name}…"):
                 try:
                     data = build()
@@ -868,7 +869,7 @@ def _built_download(label, state_key, build, file_name, mime, primary=False):
         st.download_button(label, data=data, file_name=file_name, mime=mime,
                            key=f'dl{state_key}', on_click='ignore',
                            type=('primary' if primary else 'secondary'),
-                           use_container_width=True)
+                           width='stretch')
 
 
 # ── Results ──────────────────────────────────────────────────────────────────
@@ -883,7 +884,7 @@ def render_results(results, heading, kp, fname_prefix, *, caption=None):
                 'Optimized': f"{r['rows_optimized']:,}", 'Minimal': f"{r['rows_minimal']:,}",
                 'Compact': (f"{r['rows_compact']:,}" if 'rows_compact' in r else '–')}
                for c, r in results.items()]
-    st.dataframe(pd.DataFrame(summary).set_index('Country'), use_container_width=True)
+    st.dataframe(pd.DataFrame(summary).set_index('Country'), width='stretch')
     st.caption("**Extended** = all combinations · **Optimized** = per-carrier dominance "
                "removed · **Minimal** = cross-carrier dominance removed · **Compact** = "
                "routing table: cheapest carrier per number of parcels (Express)")
