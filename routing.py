@@ -39,8 +39,26 @@ EPS = 1e-6
 # takes items up to 2.40 m long.
 CARRIER_SIZE_LIMIT = {'DHL-FENDER': 2.4}
 # DPD small (<= 3 kg) also has a size limit of 140 cm (longest side + 2x the
-# two shorter sides); USER_DEF_TYPE_1 only holds one length, so 1.4 m.
+# two shorter sides); the size limit only holds one length, so 1.4 m.
 SMALL_TARIFF_SIZE = {'DPD': (3.0, 1.4)}
+# Size limits (max length, m) are in USER_DEF_NUM_1, CargoWrite's numeric
+# field; older matrices had them in USER_DEF_TYPE_1.
+SIZE_LIMIT_COLS = ('USER_DEF_NUM_1', 'USER_DEF_TYPE_1')
+
+
+def _lengths(s):
+    """Size limits in a column: numbers (also '1,75'); marker values
+    (0.0000000000001) and text count as no limit."""
+    v = pd.to_numeric(s.map(lambda x: str(x).replace(',', '.')), errors='coerce')
+    return v.where(v.abs() > 1e-9)
+
+
+def _size_col(df):
+    """The column of the size limits in this matrix (None: no limits)."""
+    for c in SIZE_LIMIT_COLS:
+        if c in df.columns and _lengths(df[c]).notna().any():
+            return c
+    return None
 
 
 def _num(s, default):
@@ -231,13 +249,13 @@ def build_routing(df, blank_postcode=True, generic=True):
         return df, {'rows_in': 0, 'rows_out': 0, 'mismatch': 0}
     df = df.reset_index(drop=True)
     price = pd.to_numeric(df.get('TOTAL_PRICE'), errors='coerce')
-    if 'USER_DEF_TYPE_1' in df.columns and 'EACH_WEIGHT' in df.columns:
-        lim = pd.to_numeric(df['USER_DEF_TYPE_1'].map(
-            lambda v: str(v).replace(',', '.')), errors='coerce')
+    lcol = _size_col(df)
+    if lcol and 'EACH_WEIGHT' in df.columns:
+        lim = _lengths(df[lcol])
         ew = pd.to_numeric(df['EACH_WEIGHT'], errors='coerce')
         for car, (max_kg, size) in SMALL_TARIFF_SIZE.items():
             small = (df['CARRIER_ID'] == car) & (ew <= max_kg + EPS) & lim.notna()
-            df.loc[small, 'USER_DEF_TYPE_1'] = size
+            df.loc[small, lcol] = size
     # Rows for particular orders only (a customer name in USER_DEF, or an
     # AWKWARD / HAZMAT flag) stay as they are. A number in USER_DEF (e.g. the
     # 1.5 m oversize limit stamped on UPSGB rows) is a limit of the carrier:
@@ -279,18 +297,17 @@ def build_routing(df, blank_postcode=True, generic=True):
 
     per_norm, mm1, gr_norm = _route_frame(normal, OUTCOME_COLS + udf_cols)
 
-    # A size limit in USER_DEF_TYPE_1 (UPSGB 1.5 m) sends a bigger parcel to
+    # A size limit (UPSGB 1.5 m) sends a bigger parcel to
     # the oversize rows (AWKWARD). At a postcode with such a limit, the pallet
     # gets its own size limit (DHL 2.4 m).
-    if len(buckets) and 'USER_DEF_TYPE_1' in normal.columns:
+    if len(buckets) and lcol:
         def _stamp(f):
-            lim = pd.to_numeric(f['USER_DEF_TYPE_1'].map(
-                lambda v: str(v).replace(',', '.')), errors='coerce')
+            lim = _lengths(f[lcol])
             if lim.notna().any():
                 f = f.copy()
                 own = f['CARRIER_ID'].map(CARRIER_SIZE_LIMIT)
-                fill = f['USER_DEF_TYPE_1'].map(_blank) & own.notna()
-                f.loc[fill, 'USER_DEF_TYPE_1'] = own[fill]
+                fill = f[lcol].map(_blank) & own.notna()
+                f.loc[fill, lcol] = own[fill]
             return f
         per_norm = {p: _stamp(f) for p, f in per_norm.items()}
     per_buck, mm2, gr_buck = _route_frame(buckets, OUTCOME_COLS + udf_cols + flag_cols)
@@ -365,9 +382,7 @@ def build_routing(df, blank_postcode=True, generic=True):
     own = [p for p in pcs if p in per_norm and not (set(per_norm[p]['CARRIER_ID']) & buck_cars)]
 
     def _unlimited_parcel(f):
-        lim = pd.to_numeric(f['USER_DEF_TYPE_1'].map(
-            lambda v: str(v).replace(',', '.')), errors='coerce') \
-            if 'USER_DEF_TYPE_1' in f.columns else pd.Series(np.nan, index=f.index)
+        lim = _lengths(f[lcol]) if lcol else pd.Series(np.nan, index=f.index)
         return bool((lim.isna() & ~f['CARRIER_ID'].isin(CARRIER_SIZE_LIMIT)).any())
     on_top = bool(buck_cars) and not any(
         _unlimited_parcel(per_norm[p]) for p in pcs if p in per_norm and p not in set(own))
