@@ -38,9 +38,9 @@ EPS = 1e-6
 # Size limit (longest side, m) of the pallet carrier: DHL Freight EuroConnect
 # takes items up to 2.40 m long.
 CARRIER_SIZE_LIMIT = {'DHL-FENDER': 2.4}
-# DPD small (<= 3 kg) also has a size limit of 140 cm (longest side + 2x the
-# two shorter sides); the size limit only holds one length, so 1.4 m.
-SMALL_TARIFF_SIZE = {'DPD': (3.0, 1.4)}
+# Small-parcel tariffs with their own size limit {carrier: (max kg, max m)}.
+# Empty: DPD small used to get 1.4 m, now DPD has 1.75 m for every parcel.
+SMALL_TARIFF_SIZE = {}
 # Size limits (max length, m) are in USER_DEF_NUM_1, CargoWrite's numeric
 # field; older matrices had them in USER_DEF_TYPE_1.
 SIZE_LIMIT_COLS = ('USER_DEF_NUM_1', 'USER_DEF_TYPE_1')
